@@ -48,14 +48,19 @@ type AppliedPortrait = {
       avgRgb: { r: number; g: number; b: number };
       hex: string;
       sampleCount: number;
-      warmScore: number;
-      coolScore: number;
-      tone: "Warm" | "Cool" | "Neutral";
     }>;
-    scoreSummary: {
-      warm: number;
-      cool: number;
-      gap: number;
+    drapeComparison: {
+      recommendedGroup: "warm" | "cool" | "neutral";
+      warmAverage: number;
+      coolAverage: number;
+      items: Array<{
+        id: string;
+        label: string;
+        group: "warm" | "cool";
+        hex: string;
+        score: number;
+      }>;
+      selectedDrapeId: string;
     };
   };
 } | null;

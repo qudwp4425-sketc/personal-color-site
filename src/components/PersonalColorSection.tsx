@@ -1,8 +1,14 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { InfoChip, SectionHeader } from "./Cards";
-import { labToLch, round, srgb255ToLab, rgb255ToHex } from "../lib/color";
+import { labToLch, rgb255ToHex, round, srgb255ToLab } from "../lib/color";
 
 type RegionName = "leftCheek" | "rightCheek" | "chin";
+type Tone = "Warm" | "Cool" | "Neutral";
+type Confidence = "High" | "Medium" | "Low";
+type TemperatureGroup = "warm" | "cool";
+
+type Point = { x: number; y: number };
 
 type RegionAnalysis = {
   name: RegionName;
@@ -12,16 +18,21 @@ type RegionAnalysis = {
   avgRgb: { r: number; g: number; b: number };
   hex: string;
   sampleCount: number;
-  warmScore: number;
-  coolScore: number;
-  tone: "Warm" | "Cool" | "Neutral";
+};
+
+type DrapeScore = {
+  id: string;
+  label: string;
+  group: TemperatureGroup;
+  hex: string;
+  score: number;
 };
 
 type AnalysisResult = {
   avgLab: { L: number; a: number; b: number };
   lch: { L: number; C: number; h: number };
-  tone: "Warm" | "Cool" | "Neutral";
-  confidence: "High" | "Medium" | "Low";
+  tone: Tone;
+  confidence: Confidence;
   sampleCount: number;
   avgRgb: { r: number; g: number; b: number };
   hex: string;
@@ -32,10 +43,12 @@ type AnalysisResult = {
     regionAgreementOk: boolean;
   };
   regions: RegionAnalysis[];
-  scoreSummary: {
-    warm: number;
-    cool: number;
-    gap: number;
+  drapeComparison: {
+    recommendedGroup: TemperatureGroup | "neutral";
+    warmAverage: number;
+    coolAverage: number;
+    items: DrapeScore[];
+    selectedDrapeId: string;
   };
 };
 
@@ -49,8 +62,33 @@ type PersonalColorSectionProps = {
   onApplyToSimulator: (payload: AppliedPortrait) => void;
 };
 
+const FACE_OVAL_INDICES = [
+  10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152,
+  148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+];
+
+const DRAPE_PRESETS: Array<{ id: string; label: string; group: TemperatureGroup; hex: string }> = [
+  { id: "warm-beige", label: "Warm Beige", group: "warm", hex: "#D7B79A" },
+  { id: "warm-camel", label: "Camel", group: "warm", hex: "#B88353" },
+  { id: "warm-coral", label: "Coral", group: "warm", hex: "#E98B73" },
+  { id: "warm-olive", label: "Olive", group: "warm", hex: "#8B8A47" },
+  { id: "cool-rose", label: "Cool Rose", group: "cool", hex: "#D58AA8" },
+  { id: "cool-lavender", label: "Lavender", group: "cool", hex: "#A89BD6" },
+  { id: "cool-bluegray", label: "Blue Gray", group: "cool", hex: "#7B8FA8" },
+  { id: "cool-icypink", label: "Icy Pink", group: "cool", hex: "#E7CADB" },
+];
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function hexToRgb255(hex: string) {
+  const normalized = hex.replace("#", "");
+  return {
+    r: parseInt(normalized.slice(0, 2), 16),
+    g: parseInt(normalized.slice(2, 4), 16),
+    b: parseInt(normalized.slice(4, 6), 16),
+  };
 }
 
 function isSkinLike(r: number, g: number, b: number) {
@@ -75,48 +113,196 @@ function isSkinLike(r: number, g: number, b: number) {
   return rgbRule && ycbcrRule;
 }
 
+function averagePoint(points: Point[]) {
+  const sum = points.reduce((acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }), { x: 0, y: 0 });
+  return {
+    x: sum.x / points.length,
+    y: sum.y / points.length,
+  };
+}
 
+function getLandmarkPoint(landmarks: { x: number; y: number }[], index: number, width: number, height: number): Point {
+  const point = landmarks[index];
+  return { x: point.x * width, y: point.y * height };
+}
 
-function getRegionToneScore(lab: { L: number; a: number; b: number }) {
-  const lch = labToLch(lab.L, lab.a, lab.b);
+function getRegionCenter(
+  landmarks: { x: number; y: number }[],
+  width: number,
+  height: number,
+  indices: number[],
+): Point {
+  return averagePoint(indices.map((index) => getLandmarkPoint(landmarks, index, width, height)));
+}
 
-  let warm = 0;
-  let cool = 0;
+function getCircularHueDistance(h1: number, h2: number) {
+  const diff = Math.abs(h1 - h2);
+  return Math.min(diff, 360 - diff);
+}
 
-  // yellow bias
-  if (lab.b >= 18) warm += 2.4;
-  else if (lab.b >= 15) warm += 1.8;
-  else if (lab.b >= 12) warm += 1.0;
-  else cool += 0.8;
+function getBounds(points: Point[]) {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  };
+}
 
-  // b* vs a* balance
-  if (lab.b - lab.a >= 10) warm += 2.0;
-  else if (lab.b - lab.a >= 6) warm += 1.2;
-  else if (lab.a - lab.b >= 2) cool += 1.6;
-  else if (lab.a >= lab.b) cool += 1.0;
+function getExpandedOvalPoints(points: Point[]) {
+  const bounds = getBounds(points);
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  const faceHeight = bounds.maxY - bounds.minY;
 
-  // hue warm zone: yellow-red skin zone
-  if (lch.h >= 38 && lch.h <= 82) warm += 2.0;
-  else if (lch.h >= 82 && lch.h <= 95) warm += 1.0;
-  else if (lch.h < 30 || lch.h > 95) cool += 1.6;
+  return points.map((point) => {
+    const dx = point.x - centerX;
+    const dy = point.y - centerY;
 
-  // very low yellow support
-  if (lab.b <= 10) cool += 1.8;
-  else if (lab.b <= 13) cool += 1.0;
+    let scaleX = 1.06;
+    let scaleY = 1.04;
+    let offsetY = 0;
 
-  // chroma too low = weak evidence
-  if (lch.C < 12) {
-    warm *= 0.8;
-    cool *= 0.8;
+    if (point.y < centerY) {
+      scaleX = 1.14;
+      scaleY = 1.16;
+      offsetY = -faceHeight * 0.08;
+    }
+
+    return {
+      x: centerX + dx * scaleX,
+      y: centerY + dy * scaleY + offsetY,
+    };
+  });
+}
+
+function drawClosedPath(ctx: CanvasRenderingContext2D, points: Point[]) {
+  if (points.length === 0) return;
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = points[i - 1];
+    const current = points[i];
+    const midX = (prev.x + current.x) / 2;
+    const midY = (prev.y + current.y) / 2;
+    ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
   }
 
-  const gap = warm - cool;
+  const last = points[points.length - 1];
+  const first = points[0];
+  const closingMidX = (last.x + first.x) / 2;
+  const closingMidY = (last.y + first.y) / 2;
+  ctx.quadraticCurveTo(last.x, last.y, closingMidX, closingMidY);
+  ctx.quadraticCurveTo(first.x, first.y, first.x, first.y);
+  ctx.closePath();
+}
 
-  let tone: "Warm" | "Cool" | "Neutral" = "Neutral";
-  if (gap >= 1.2) tone = "Warm";
-  else if (gap <= -1.2) tone = "Cool";
+function sampleEllipseRegion(params: {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  center: Point;
+  rx: number;
+  ry: number;
+  label: string;
+  name: RegionName;
+}) {
+  let sumL = 0;
+  let sumA = 0;
+  let sumB = 0;
+  let sumR = 0;
+  let sumG = 0;
+  let sumBl = 0;
+  let count = 0;
 
-  return { warm, cool, tone, lch };
+  const minX = Math.max(0, Math.floor(params.center.x - params.rx));
+  const maxX = Math.min(params.width - 1, Math.ceil(params.center.x + params.rx));
+  const minY = Math.max(0, Math.floor(params.center.y - params.ry));
+  const maxY = Math.min(params.height - 1, Math.ceil(params.center.y + params.ry));
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const nx = (x - params.center.x) / params.rx;
+      const ny = (y - params.center.y) / params.ry;
+      if (nx * nx + ny * ny > 1) continue;
+
+      const idx = (y * params.width + x) * 4;
+      const r = params.data[idx];
+      const g = params.data[idx + 1];
+      const b = params.data[idx + 2];
+
+      if (!isSkinLike(r, g, b)) continue;
+
+      const lab = srgb255ToLab(r, g, b);
+
+      sumL += lab.L;
+      sumA += lab.a;
+      sumB += lab.b;
+      sumR += r;
+      sumG += g;
+      sumBl += b;
+      count += 1;
+    }
+  }
+
+  if (count < 80) return null;
+
+  const avgLab = {
+    L: sumL / count,
+    a: sumA / count,
+    b: sumB / count,
+  };
+
+  const avgRgb = {
+    r: Math.round(sumR / count),
+    g: Math.round(sumG / count),
+    b: Math.round(sumBl / count),
+  };
+
+  return {
+    name: params.name,
+    label: params.label,
+    avgLab,
+    lch: labToLch(avgLab.L, avgLab.a, avgLab.b),
+    avgRgb,
+    hex: rgb255ToHex(avgRgb),
+    sampleCount: count,
+  } satisfies RegionAnalysis;
+}
+
+function scoreDrapeAgainstSkin(
+  drapeHex: string,
+  group: TemperatureGroup,
+  skinLab: { L: number; a: number; b: number },
+  skinLch: { L: number; C: number; h: number },
+) {
+  const drapeRgb = hexToRgb255(drapeHex);
+  const drapeLab = srgb255ToLab(drapeRgb.r, drapeRgb.g, drapeRgb.b);
+  const drapeLch = labToLch(drapeLab.L, drapeLab.a, drapeLab.b);
+
+  const hueGap = getCircularHueDistance(skinLch.h, drapeLch.h);
+  const lightnessGap = Math.abs(skinLab.L - drapeLab.L);
+  const chromaGap = Math.abs(skinLch.C - drapeLch.C);
+
+  const hueFit = 1 - clamp(hueGap / 120, 0, 1);
+  const lightnessFit = 1 - clamp(Math.abs(lightnessGap - 18) / 28, 0, 1);
+  const chromaFit = 1 - clamp(chromaGap / 45, 0, 1);
+
+  const warmBias = clamp((skinLab.b - skinLab.a + 6) / 18, 0, 1);
+  const coolBias = clamp((skinLab.a - skinLab.b + 8) / 18, 0, 1);
+
+  let temperatureBonus = 0;
+  if (group === "warm") {
+    temperatureBonus = warmBias * 16 - coolBias * 6;
+  } else {
+    temperatureBonus = coolBias * 16 - warmBias * 6;
+  }
+
+  return clamp(100 * (0.42 * hueFit + 0.33 * lightnessFit + 0.25 * chromaFit) + temperatureBonus, 0, 100);
 }
 
 function getConfidence(params: {
@@ -127,7 +313,7 @@ function getConfidence(params: {
   regionAgreementOk: boolean;
 }) {
   let score = 0;
-  if (params.sampleCount > 1800) score += 1;
+  if (params.sampleCount > 500) score += 1;
   if (params.brightnessOk) score += 1;
   if (params.symmetryOk) score += 1;
   if (params.resolutionOk) score += 1;
@@ -143,6 +329,9 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cutoutCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  const [faceLandmarker, setFaceLandmarker] = useState<FaceLandmarker | null>(null);
+  const [modelStatus, setModelStatus] = useState<"loading" | "ready" | "error">("loading");
+
   const [uploadedImage, setUploadedImage] = useState<null | {
     src: string;
     name: string;
@@ -152,6 +341,47 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
 
   const [cutoutSrc, setCutoutSrc] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [selectedDrapeId, setSelectedDrapeId] = useState<string>(DRAPE_PRESETS[0].id);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function init() {
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm",
+        );
+
+        const landmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+          },
+          runningMode: "IMAGE",
+          numFaces: 1,
+        });
+
+        if (!isMounted) return;
+        setFaceLandmarker(landmarker);
+        setModelStatus("ready");
+      } catch {
+        if (!isMounted) return;
+        setModelStatus("error");
+      }
+    }
+
+    init();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const selectedDrape = useMemo(() => {
+    const byResult = analysis?.drapeComparison.items.find((item) => item.id === selectedDrapeId);
+    if (byResult) return byResult;
+    return DRAPE_PRESETS[0];
+  }, [analysis, selectedDrapeId]);
 
   const resultLines = useMemo(() => {
     if (!analysis) return [];
@@ -161,11 +391,13 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
       `RGB ${analysis.avgRgb.r}, ${analysis.avgRgb.g}, ${analysis.avgRgb.b}`,
       `HEX ${analysis.hex}`,
       `Tone ${analysis.tone} · Confidence ${analysis.confidence}`,
-      `Warm Score ${round(analysis.scoreSummary.warm)} · Cool Score ${round(analysis.scoreSummary.cool)}`,
+      `Warm Avg ${round(analysis.drapeComparison.warmAverage)} · Cool Avg ${round(analysis.drapeComparison.coolAverage)}`,
     ];
   }, [analysis]);
 
   const loadImageFile = (file: File) => {
+    if (!faceLandmarker) return;
+
     const reader = new FileReader();
 
     reader.onload = () => {
@@ -180,118 +412,11 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
 
         sourceCanvas.width = img.naturalWidth;
         sourceCanvas.height = img.naturalHeight;
-
         cutoutCanvas.width = img.naturalWidth;
         cutoutCanvas.height = img.naturalHeight;
 
-        const sctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
-        const cctx = cutoutCanvas.getContext("2d", { willReadFrequently: true });
-        if (!sctx || !cctx) return;
-
-        sctx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
-        cctx.clearRect(0, 0, cutoutCanvas.width, cutoutCanvas.height);
-
-        sctx.drawImage(img, 0, 0);
-        cctx.drawImage(img, 0, 0);
-
-        const imageData = sctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
-        const cutoutData = cctx.getImageData(0, 0, cutoutCanvas.width, cutoutCanvas.height);
-        const data = imageData.data;
-        const out = cutoutData.data;
-
-        const w = sourceCanvas.width;
-        const h = sourceCanvas.height;
-
-        // 표시용 마스크
-        const displayCx = w * 0.5;
-        const displayCy = h * 0.47;
-        const displayRx = w * 0.26;
-        const displayRy = h * 0.40;
-
-        const regions = [
-          {
-            key: "leftCheek" as const,
-            label: "좌볼",
-            cx: w * 0.39,
-            cy: h * 0.50,
-            rx: w * 0.08,
-            ry: h * 0.10,
-          },
-          {
-            key: "rightCheek" as const,
-            label: "우볼",
-            cx: w * 0.61,
-            cy: h * 0.50,
-            rx: w * 0.08,
-            ry: h * 0.10,
-          },
-          {
-            key: "chin" as const,
-            label: "턱",
-            cx: w * 0.50,
-            cy: h * 0.68,
-            rx: w * 0.09,
-            ry: h * 0.08,
-          },
-        ];
-
-        const accum = regions.map((region) => ({
-          ...region,
-          sumL: 0,
-          sumA: 0,
-          sumB: 0,
-          sumR: 0,
-          sumG: 0,
-          sumBl: 0,
-          count: 0,
-        }));
-
-        for (let y = 0; y < h; y += 1) {
-          for (let x = 0; x < w; x += 1) {
-            const idx = (y * w + x) * 4;
-            const r = data[idx];
-            const g = data[idx + 1];
-            const b = data[idx + 2];
-
-            // 표시용 누끼
-            const dnx = (x - displayCx) / displayRx;
-            const dny = (y - displayCy) / displayRy;
-            const displayDist = dnx * dnx + dny * dny;
-
-            if (displayDist > 1.08) {
-              out[idx + 3] = 0;
-            } else {
-              const alphaFactor = displayDist <= 0.9 ? 1 : clamp((1.08 - displayDist) / (1.08 - 0.9), 0, 1);
-              out[idx + 3] = Math.round(255 * alphaFactor);
-            }
-
-            if (!isSkinLike(r, g, b)) continue;
-
-            const lab = srgb255ToLab(r, g, b);
-
-            for (const region of accum) {
-              const nx = (x - region.cx) / region.rx;
-              const ny = (y - region.cy) / region.ry;
-              const inside = nx * nx + ny * ny <= 1;
-
-              if (!inside) continue;
-
-              region.sumL += lab.L;
-              region.sumA += lab.a;
-              region.sumB += lab.b;
-              region.sumR += r;
-              region.sumG += g;
-              region.sumBl += b;
-              region.count += 1;
-            }
-          }
-        }
-
-        cctx.putImageData(cutoutData, 0, 0);
-        const cutoutUrl = cutoutCanvas.toDataURL("image/png");
-        setCutoutSrc(cutoutUrl);
-
-        const validRegions = accum.filter((region) => region.count >= 120);
+        const detectResult = faceLandmarker.detect(img);
+        const landmarks = detectResult.faceLandmarks?.[0];
 
         setUploadedImage({
           src,
@@ -300,107 +425,164 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
           height: img.naturalHeight,
         });
 
-        if (validRegions.length < 2) {
+        if (!landmarks) {
+          setCutoutSrc(null);
           setAnalysis(null);
           return;
         }
 
-        const regionAnalyses: RegionAnalysis[] = validRegions.map((region) => {
-          const avgLab = {
-            L: region.sumL / region.count,
-            a: region.sumA / region.count,
-            b: region.sumB / region.count,
-          };
-          const toneScore = getRegionToneScore(avgLab);
+        const sctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+        const cctx = cutoutCanvas.getContext("2d", { willReadFrequently: true });
+        if (!sctx || !cctx) return;
 
-          const avgRgb = {
-            r: Math.round(region.sumR / region.count),
-            g: Math.round(region.sumG / region.count),
-            b: Math.round(region.sumBl / region.count),
-          };
+        sctx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
+        cctx.clearRect(0, 0, cutoutCanvas.width, cutoutCanvas.height);
+        sctx.drawImage(img, 0, 0);
+        cctx.drawImage(img, 0, 0);
 
-          return {
-            name: region.key,
-            label: region.label,
-            avgLab,
-            lch: toneScore.lch,
-            avgRgb,
-            hex: rgb255ToHex(avgRgb),
-            sampleCount: region.count,
-            warmScore: toneScore.warm,
-            coolScore: toneScore.cool,
-            tone: toneScore.tone,
-          };
-        });
+        const sourceImageData = sctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+        const data = sourceImageData.data;
+
+        const ovalPoints = FACE_OVAL_INDICES.map((index) =>
+          getLandmarkPoint(landmarks, index, sourceCanvas.width, sourceCanvas.height),
+        );
+        const expandedOvalPoints = getExpandedOvalPoints(ovalPoints);
+
+        const maskCanvas = document.createElement("canvas");
+        maskCanvas.width = cutoutCanvas.width;
+        maskCanvas.height = cutoutCanvas.height;
+        const mctx = maskCanvas.getContext("2d");
+        if (!mctx) return;
+
+        mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        mctx.filter = "blur(8px)";
+        mctx.fillStyle = "rgba(255,255,255,1)";
+        drawClosedPath(mctx, expandedOvalPoints);
+        mctx.fill();
+
+        cctx.globalCompositeOperation = "destination-in";
+        cctx.drawImage(maskCanvas, 0, 0);
+        cctx.globalCompositeOperation = "source-over";
+
+        const cutoutUrl = cutoutCanvas.toDataURL("image/png");
+        setCutoutSrc(cutoutUrl);
+
+        const leftCheekCenter = getRegionCenter(landmarks, sourceCanvas.width, sourceCanvas.height, [234, 93, 132]);
+        const rightCheekCenter = getRegionCenter(landmarks, sourceCanvas.width, sourceCanvas.height, [454, 323, 361]);
+        const chinTip = getLandmarkPoint(landmarks, 152, sourceCanvas.width, sourceCanvas.height);
+        const lowerLip = getLandmarkPoint(landmarks, 17, sourceCanvas.width, sourceCanvas.height);
+        const chinCenter = {
+          x: (chinTip.x * 0.62) + (lowerLip.x * 0.38),
+          y: (chinTip.y * 0.62) + (lowerLip.y * 0.38),
+        };
+
+        const bounds = getBounds(ovalPoints);
+        const faceWidth = bounds.maxX - bounds.minX;
+        const faceHeight = bounds.maxY - bounds.minY;
+
+        const regionAnalyses = [
+          sampleEllipseRegion({
+            data,
+            width: sourceCanvas.width,
+            height: sourceCanvas.height,
+            center: leftCheekCenter,
+            rx: faceWidth * 0.09,
+            ry: faceHeight * 0.08,
+            label: "좌볼",
+            name: "leftCheek",
+          }),
+          sampleEllipseRegion({
+            data,
+            width: sourceCanvas.width,
+            height: sourceCanvas.height,
+            center: rightCheekCenter,
+            rx: faceWidth * 0.09,
+            ry: faceHeight * 0.08,
+            label: "우볼",
+            name: "rightCheek",
+          }),
+          sampleEllipseRegion({
+            data,
+            width: sourceCanvas.width,
+            height: sourceCanvas.height,
+            center: chinCenter,
+            rx: faceWidth * 0.085,
+            ry: faceHeight * 0.065,
+            label: "턱",
+            name: "chin",
+          }),
+        ].filter(Boolean) as RegionAnalysis[];
+
+        if (regionAnalyses.length < 2) {
+          setAnalysis(null);
+          return;
+        }
 
         const totalWeight = regionAnalyses.reduce((acc, region) => acc + region.sampleCount, 0);
 
         const avgLab = {
-          L:
-            regionAnalyses.reduce((acc, region) => acc + region.avgLab.L * region.sampleCount, 0) /
-            totalWeight,
-          a:
-            regionAnalyses.reduce((acc, region) => acc + region.avgLab.a * region.sampleCount, 0) /
-            totalWeight,
-          b:
-            regionAnalyses.reduce((acc, region) => acc + region.avgLab.b * region.sampleCount, 0) /
-            totalWeight,
+          L: regionAnalyses.reduce((acc, region) => acc + region.avgLab.L * region.sampleCount, 0) / totalWeight,
+          a: regionAnalyses.reduce((acc, region) => acc + region.avgLab.a * region.sampleCount, 0) / totalWeight,
+          b: regionAnalyses.reduce((acc, region) => acc + region.avgLab.b * region.sampleCount, 0) / totalWeight,
         };
 
         const avgRgb = {
-          r:
-            Math.round(
-              regionAnalyses.reduce((acc, region) => acc + region.avgRgb.r * region.sampleCount, 0) / totalWeight
-            ),
-          g:
-            Math.round(
-              regionAnalyses.reduce((acc, region) => acc + region.avgRgb.g * region.sampleCount, 0) / totalWeight
-            ),
-          b:
-            Math.round(
-              regionAnalyses.reduce((acc, region) => acc + region.avgRgb.b * region.sampleCount, 0) / totalWeight
-            ),
+          r: Math.round(regionAnalyses.reduce((acc, region) => acc + region.avgRgb.r * region.sampleCount, 0) / totalWeight),
+          g: Math.round(regionAnalyses.reduce((acc, region) => acc + region.avgRgb.g * region.sampleCount, 0) / totalWeight),
+          b: Math.round(regionAnalyses.reduce((acc, region) => acc + region.avgRgb.b * region.sampleCount, 0) / totalWeight),
         };
 
         const lch = labToLch(avgLab.L, avgLab.a, avgLab.b);
 
-        const totalWarm = regionAnalyses.reduce((acc, region) => acc + region.warmScore, 0);
-        const totalCool = regionAnalyses.reduce((acc, region) => acc + region.coolScore, 0);
-        const scoreGap = totalWarm - totalCool;
+        const warmItems = DRAPE_PRESETS
+          .filter((item) => item.group === "warm")
+          .map((item) => ({
+            ...item,
+            score: scoreDrapeAgainstSkin(item.hex, item.group, avgLab, lch),
+          }));
 
-        const regionHueSpread =
-          regionAnalyses.length >= 2
-            ? Math.max(...regionAnalyses.map((r) => r.lch.h)) - Math.min(...regionAnalyses.map((r) => r.lch.h))
-            : 0;
+        const coolItems = DRAPE_PRESETS
+          .filter((item) => item.group === "cool")
+          .map((item) => ({
+            ...item,
+            score: scoreDrapeAgainstSkin(item.hex, item.group, avgLab, lch),
+          }));
 
-        const regionBSpread =
-          regionAnalyses.length >= 2
-            ? Math.max(...regionAnalyses.map((r) => r.avgLab.b)) - Math.min(...regionAnalyses.map((r) => r.avgLab.b))
-            : 0;
+        const allDrapeItems = [...warmItems, ...coolItems].sort((a, b) => b.score - a.score);
 
-        const leftRegion = regionAnalyses.find((r) => r.name === "leftCheek");
-        const rightRegion = regionAnalyses.find((r) => r.name === "rightCheek");
+        const warmAverage = warmItems.reduce((acc, item) => acc + item.score, 0) / warmItems.length;
+        const coolAverage = coolItems.reduce((acc, item) => acc + item.score, 0) / coolItems.length;
+
+        let tone: Tone = "Neutral";
+        let recommendedGroup: TemperatureGroup | "neutral" = "neutral";
+        const groupGap = warmAverage - coolAverage;
+
+        if (groupGap >= 5.5) {
+          tone = "Warm";
+          recommendedGroup = "warm";
+        } else if (groupGap <= -5.5) {
+          tone = "Cool";
+          recommendedGroup = "cool";
+        }
+
+        const leftRegion = regionAnalyses.find((region) => region.name === "leftCheek");
+        const rightRegion = regionAnalyses.find((region) => region.name === "rightCheek");
 
         const symmetryDelta =
           leftRegion && rightRegion ? Math.abs(leftRegion.avgLab.L - rightRegion.avgLab.L) : 99;
 
+        const regionHueSpread =
+          Math.max(...regionAnalyses.map((region) => region.lch.h)) -
+          Math.min(...regionAnalyses.map((region) => region.lch.h));
+
+        const regionBSpread =
+          Math.max(...regionAnalyses.map((region) => region.avgLab.b)) -
+          Math.min(...regionAnalyses.map((region) => region.avgLab.b));
+
         const brightnessOk = avgLab.L >= 45 && avgLab.L <= 82;
         const symmetryOk = symmetryDelta <= 8;
         const resolutionOk = img.naturalWidth >= 480 && img.naturalHeight >= 480;
-        const regionAgreementOk = regionHueSpread <= 26 && regionBSpread <= 8;
-
-        let tone: "Warm" | "Cool" | "Neutral" = "Neutral";
-
-        const warmRegionCount = regionAnalyses.filter((r) => r.tone === "Warm").length;
-        const coolRegionCount = regionAnalyses.filter((r) => r.tone === "Cool").length;
-
-        if (scoreGap >= 2.2 && warmRegionCount >= 2 && regionAgreementOk) {
-          tone = "Warm";
-        } else if (scoreGap <= -2.2 && coolRegionCount >= 2 && regionAgreementOk) {
-          tone = "Cool";
-        } else {
-          tone = "Neutral";
-        }
+        const regionAgreementOk = regionHueSpread <= 28 && regionBSpread <= 8;
 
         const confidence = getConfidence({
           sampleCount: totalWeight,
@@ -410,7 +592,10 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
           regionAgreementOk,
         });
 
-        const nextAnalysis: AnalysisResult = {
+        const bestDrape = allDrapeItems[0];
+        setSelectedDrapeId(bestDrape.id);
+
+        setAnalysis({
           avgLab,
           lch,
           tone,
@@ -425,14 +610,14 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
             regionAgreementOk,
           },
           regions: regionAnalyses,
-          scoreSummary: {
-            warm: totalWarm,
-            cool: totalCool,
-            gap: Math.abs(scoreGap),
+          drapeComparison: {
+            recommendedGroup,
+            warmAverage,
+            coolAverage,
+            items: allDrapeItems,
+            selectedDrapeId: bestDrape.id,
           },
-        };
-
-        setAnalysis(nextAnalysis);
+        });
       };
 
       img.src = src;
@@ -445,8 +630,8 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
     <section id="personal-color" className="section">
       <SectionHeader
         eyebrow="Personal Color"
-        title="Face Lab Analyzer"
-        description="좌볼, 우볼, 턱의 피부 영역을 따로 분석한 뒤 Lab, hue angle, chroma, 부위 간 일관성을 함께 반영해 웜/쿨 성향을 추정합니다. 조명과 촬영 환경에 따라 결과는 달라질 수 있습니다."
+        title="Face Mesh + Drape Comparison Analyzer"
+        description="Face Mesh로 좌볼, 우볼, 턱 ROI를 잡고, warm / cool 드레이프 팔레트와의 조화 점수를 비교해 톤을 추정합니다. 사진 1장 기반 분석이라 조명과 화이트밸런스 영향은 여전히 존재합니다."
       />
 
       <div
@@ -471,7 +656,11 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
           </div>
 
           <div className="note-box note-blue" style={{ marginTop: 16 }}>
-            분석은 좌볼, 우볼, 턱의 피부 ROI를 각각 따로 계산합니다. 세 부위 결과가 서로 다르면 웜/쿨을 강하게 단정하지 않고 Neutral 쪽으로 보수적으로 처리합니다.
+            {modelStatus === "loading" && "Face Mesh 모델을 불러오는 중입니다."}
+            {modelStatus === "ready" &&
+              "Face Mesh로 좌볼·우볼·턱 ROI를 자동 추출하고 warm/cool 드레이프 팔레트 점수를 비교합니다."}
+            {modelStatus === "error" &&
+              "Face Mesh 모델 로딩에 실패했습니다. 네트워크 상태를 확인하고 새로고침 후 다시 시도하세요."}
           </div>
 
           <input
@@ -488,7 +677,11 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
           />
 
           <div className="button-row" style={{ marginTop: 16 }}>
-            <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}>
+            <button
+              className="btn btn-primary"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={modelStatus !== "ready"}
+            >
               얼굴 사진 업로드
             </button>
           </div>
@@ -514,9 +707,10 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                 </div>
 
                 <div>
-                  <div className="mini-label">얼굴 누끼</div>
-                  <div className="portrait-frame portrait-cutout-stage">
+                  <div className="mini-label">누끼 + 드레이프 프리뷰</div>
+                  <div className="portrait-frame portrait-drape-stage" style={{ background: selectedDrape.hex }}>
                     {cutoutSrc ? <img src={cutoutSrc} alt="Face cutout" className="portrait-image" /> : null}
+                    <div className="drape-neck-band" style={{ background: selectedDrape.hex }} />
                   </div>
                 </div>
               </div>
@@ -565,9 +759,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                         <div className="roi-card-top">
                           <div>
                             <div className="roi-title">{region.label}</div>
-                            <div className="roi-subtitle">
-                              {region.tone} · {region.sampleCount} px
-                            </div>
+                            <div className="roi-subtitle">{region.sampleCount} px</div>
                           </div>
                           <div className="roi-swatch" style={{ background: region.hex }} />
                         </div>
@@ -575,10 +767,43 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                         <div className="roi-lines">
                           <div>Lab ({round(region.avgLab.L)}, {round(region.avgLab.a)}, {round(region.avgLab.b)})</div>
                           <div>h° {round(region.lch.h)} · C*ab {round(region.lch.C)}</div>
-                          <div>Warm {round(region.warmScore)} · Cool {round(region.coolScore)}</div>
                         </div>
                       </div>
                     ))}
+                  </div>
+
+                  <div className="drape-section">
+                    <div className="drape-header-row">
+                      <div>
+                        <div className="roi-title">드레이프 비교</div>
+                        <div className="roi-subtitle">
+                          추천 그룹: {analysis.drapeComparison.recommendedGroup}
+                        </div>
+                      </div>
+                      <div className="chip-row" style={{ marginTop: 0 }}>
+                        <InfoChip text={`Warm ${round(analysis.drapeComparison.warmAverage)}`} secondary />
+                        <InfoChip text={`Cool ${round(analysis.drapeComparison.coolAverage)}`} secondary />
+                      </div>
+                    </div>
+
+                    <div className="drape-grid">
+                      {analysis.drapeComparison.items.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`drape-card ${selectedDrapeId === item.id ? "drape-card-active" : ""}`}
+                          onClick={() => setSelectedDrapeId(item.id)}
+                        >
+                          <div className="drape-color" style={{ background: item.hex }} />
+                          <div className="drape-meta">
+                            <div className="drape-name">{item.label}</div>
+                            <div className="drape-sub">
+                              {item.group} · {round(item.score)}
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="quality-grid">
@@ -592,7 +817,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                       해상도: {analysis.quality.resolutionOk ? "양호" : "낮음"}
                     </div>
                     <div className={`quality-item ${analysis.quality.regionAgreementOk ? "quality-ok" : "quality-bad"}`}>
-                      부위 일관성: {analysis.quality.regionAgreementOk ? "양호" : "편차 큼"}
+                      ROI 일관성: {analysis.quality.regionAgreementOk ? "양호" : "편차 큼"}
                     </div>
                   </div>
 
@@ -615,13 +840,13 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                 </>
               ) : (
                 <div className="note-box note-amber" style={{ marginTop: 16 }}>
-                  피부 샘플 수가 충분하지 않습니다. 얼굴이 더 크게 나오고 조명이 균일한 사진으로 다시 업로드하는 편이 좋습니다.
+                  얼굴 랜드마크 또는 피부 ROI 추출이 충분하지 않습니다. 얼굴이 더 크게 보이고 조명이 균일한 사진으로 다시 업로드하세요.
                 </div>
               )}
             </>
           ) : (
             <div className="empty-box">
-              아직 업로드된 얼굴 사진이 없습니다. 정면 얼굴 사진을 올리면 좌볼/우볼/턱 기준 피부색 분석과 얼굴 누끼를 생성합니다.
+              아직 업로드된 얼굴 사진이 없습니다. Face Mesh를 이용해 좌볼/우볼/턱 ROI를 추출하고 드레이프 비교 점수를 계산합니다.
             </div>
           )}
         </div>
