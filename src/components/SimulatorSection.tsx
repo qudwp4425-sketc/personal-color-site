@@ -38,6 +38,24 @@ type AppliedPortrait = {
       brightnessOk: boolean;
       symmetryOk: boolean;
       resolutionOk: boolean;
+      regionAgreementOk: boolean;
+    };
+    regions: Array<{
+      name: "leftCheek" | "rightCheek" | "chin";
+      label: string;
+      avgLab: { L: number; a: number; b: number };
+      lch: { L: number; C: number; h: number };
+      avgRgb: { r: number; g: number; b: number };
+      hex: string;
+      sampleCount: number;
+      warmScore: number;
+      coolScore: number;
+      tone: "Warm" | "Cool" | "Neutral";
+    }>;
+    scoreSummary: {
+      warm: number;
+      cool: number;
+      gap: number;
     };
   };
 } | null;

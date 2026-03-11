@@ -636,3 +636,51 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+.roi-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-top: 16px;
+}
+
+.roi-card {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 18px;
+  padding: 14px;
+}
+
+.roi-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.roi-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.roi-subtitle {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.roi-swatch {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid #cbd5e1;
+  flex: 0 0 auto;
+}
+
+.roi-lines {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+}

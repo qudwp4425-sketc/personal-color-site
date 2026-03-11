@@ -2,6 +2,21 @@ import { useMemo, useRef, useState } from "react";
 import { InfoChip, SectionHeader } from "./Cards";
 import { labToLch, round, srgb255ToLab, rgb255ToHex } from "../lib/color";
 
+type RegionName = "leftCheek" | "rightCheek" | "chin";
+
+type RegionAnalysis = {
+  name: RegionName;
+  label: string;
+  avgLab: { L: number; a: number; b: number };
+  lch: { L: number; C: number; h: number };
+  avgRgb: { r: number; g: number; b: number };
+  hex: string;
+  sampleCount: number;
+  warmScore: number;
+  coolScore: number;
+  tone: "Warm" | "Cool" | "Neutral";
+};
+
 type AnalysisResult = {
   avgLab: { L: number; a: number; b: number };
   lch: { L: number; C: number; h: number };
@@ -14,6 +29,13 @@ type AnalysisResult = {
     brightnessOk: boolean;
     symmetryOk: boolean;
     resolutionOk: boolean;
+    regionAgreementOk: boolean;
+  };
+  regions: RegionAnalysis[];
+  scoreSummary: {
+    warm: number;
+    cool: number;
+    gap: number;
   };
 };
 
@@ -26,6 +48,10 @@ type AppliedPortrait = {
 type PersonalColorSectionProps = {
   onApplyToSimulator: (payload: AppliedPortrait) => void;
 };
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
 
 function isSkinLike(r: number, g: number, b: number) {
   const max = Math.max(r, g, b);
@@ -49,30 +75,70 @@ function isSkinLike(r: number, g: number, b: number) {
   return rgbRule && ycbcrRule;
 }
 
-function scoreToneFromLab(L: number, a: number, b: number) {
-  const lch = labToLch(L, a, b);
-
-  if (b >= 16 && lch.h >= 40 && lch.h <= 95) return "Warm" as const;
-  if (b <= 13 && (lch.h < 40 || lch.h > 95)) return "Cool" as const;
-  if (b - a >= 8) return "Warm" as const;
-  if (a >= b) return "Cool" as const;
-  return "Neutral" as const;
+function hueDistance(h1: number, h2: number) {
+  const diff = Math.abs(h1 - h2);
+  return Math.min(diff, 360 - diff);
 }
 
-function getConfidence(sampleCount: number, brightnessOk: boolean, symmetryOk: boolean, resolutionOk: boolean) {
+function getRegionToneScore(lab: { L: number; a: number; b: number }) {
+  const lch = labToLch(lab.L, lab.a, lab.b);
+
+  let warm = 0;
+  let cool = 0;
+
+  // yellow bias
+  if (lab.b >= 18) warm += 2.4;
+  else if (lab.b >= 15) warm += 1.8;
+  else if (lab.b >= 12) warm += 1.0;
+  else cool += 0.8;
+
+  // b* vs a* balance
+  if (lab.b - lab.a >= 10) warm += 2.0;
+  else if (lab.b - lab.a >= 6) warm += 1.2;
+  else if (lab.a - lab.b >= 2) cool += 1.6;
+  else if (lab.a >= lab.b) cool += 1.0;
+
+  // hue warm zone: yellow-red skin zone
+  if (lch.h >= 38 && lch.h <= 82) warm += 2.0;
+  else if (lch.h >= 82 && lch.h <= 95) warm += 1.0;
+  else if (lch.h < 30 || lch.h > 95) cool += 1.6;
+
+  // very low yellow support
+  if (lab.b <= 10) cool += 1.8;
+  else if (lab.b <= 13) cool += 1.0;
+
+  // chroma too low = weak evidence
+  if (lch.C < 12) {
+    warm *= 0.8;
+    cool *= 0.8;
+  }
+
+  const gap = warm - cool;
+
+  let tone: "Warm" | "Cool" | "Neutral" = "Neutral";
+  if (gap >= 1.2) tone = "Warm";
+  else if (gap <= -1.2) tone = "Cool";
+
+  return { warm, cool, tone, lch };
+}
+
+function getConfidence(params: {
+  sampleCount: number;
+  brightnessOk: boolean;
+  symmetryOk: boolean;
+  resolutionOk: boolean;
+  regionAgreementOk: boolean;
+}) {
   let score = 0;
-  if (sampleCount > 2500) score += 1;
-  if (brightnessOk) score += 1;
-  if (symmetryOk) score += 1;
-  if (resolutionOk) score += 1;
+  if (params.sampleCount > 1800) score += 1;
+  if (params.brightnessOk) score += 1;
+  if (params.symmetryOk) score += 1;
+  if (params.resolutionOk) score += 1;
+  if (params.regionAgreementOk) score += 1;
 
-  if (score >= 4) return "High" as const;
-  if (score >= 2) return "Medium" as const;
+  if (score >= 5) return "High" as const;
+  if (score >= 3) return "Medium" as const;
   return "Low" as const;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
 }
 
 export default function PersonalColorSection({ onApplyToSimulator }: PersonalColorSectionProps) {
@@ -98,6 +164,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
       `RGB ${analysis.avgRgb.r}, ${analysis.avgRgb.g}, ${analysis.avgRgb.b}`,
       `HEX ${analysis.hex}`,
       `Tone ${analysis.tone} · Confidence ${analysis.confidence}`,
+      `Warm Score ${round(analysis.scoreSummary.warm)} · Cool Score ${round(analysis.scoreSummary.cool)}`,
     ];
   }, [analysis]);
 
@@ -138,30 +205,49 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
         const w = sourceCanvas.width;
         const h = sourceCanvas.height;
 
-        // 표시용 큰 실루엣: 머리/눈/입 포함
+        // 표시용 마스크
         const displayCx = w * 0.5;
         const displayCy = h * 0.47;
         const displayRx = w * 0.26;
         const displayRy = h * 0.40;
 
-        // 분석용 중앙 피부 영역: 얼굴 중심부 위주
-        const analysisCx = w * 0.5;
-        const analysisCy = h * 0.50;
-        const analysisRx = w * 0.18;
-        const analysisRy = h * 0.24;
+        const regions = [
+          {
+            key: "leftCheek" as const,
+            label: "좌볼",
+            cx: w * 0.39,
+            cy: h * 0.50,
+            rx: w * 0.08,
+            ry: h * 0.10,
+          },
+          {
+            key: "rightCheek" as const,
+            label: "우볼",
+            cx: w * 0.61,
+            cy: h * 0.50,
+            rx: w * 0.08,
+            ry: h * 0.10,
+          },
+          {
+            key: "chin" as const,
+            label: "턱",
+            cx: w * 0.50,
+            cy: h * 0.68,
+            rx: w * 0.09,
+            ry: h * 0.08,
+          },
+        ];
 
-        let sumL = 0;
-        let sumA = 0;
-        let sumB = 0;
-        let sumR = 0;
-        let sumG = 0;
-        let sumBl = 0;
-        let sampleCount = 0;
-
-        let leftL = 0;
-        let rightL = 0;
-        let leftCount = 0;
-        let rightCount = 0;
+        const accum = regions.map((region) => ({
+          ...region,
+          sumL: 0,
+          sumA: 0,
+          sumB: 0,
+          sumR: 0,
+          sumG: 0,
+          sumBl: 0,
+          count: 0,
+        }));
 
         for (let y = 0; y < h; y += 1) {
           for (let x = 0; x < w; x += 1) {
@@ -170,9 +256,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
             const g = data[idx + 1];
             const b = data[idx + 2];
 
-            // -------------------------
-            // 1) 표시용 누끼 마스크
-            // -------------------------
+            // 표시용 누끼
             const dnx = (x - displayCx) / displayRx;
             const dny = (y - displayCy) / displayRy;
             const displayDist = dnx * dnx + dny * dny;
@@ -180,96 +264,37 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
             if (displayDist > 1.08) {
               out[idx + 3] = 0;
             } else {
-              // 가장자리 feather
               const alphaFactor = displayDist <= 0.9 ? 1 : clamp((1.08 - displayDist) / (1.08 - 0.9), 0, 1);
               out[idx + 3] = Math.round(255 * alphaFactor);
             }
 
-            // -------------------------
-            // 2) 분석용 피부 ROI
-            // -------------------------
-            const anx = (x - analysisCx) / analysisRx;
-            const any = (y - analysisCy) / analysisRy;
-            const inAnalysisEllipse = anx * anx + any * any <= 1;
-
-            if (!inAnalysisEllipse) continue;
             if (!isSkinLike(r, g, b)) continue;
 
             const lab = srgb255ToLab(r, g, b);
 
-            sumL += lab.L;
-            sumA += lab.a;
-            sumB += lab.b;
-            sumR += r;
-            sumG += g;
-            sumBl += b;
-            sampleCount += 1;
+            for (const region of accum) {
+              const nx = (x - region.cx) / region.rx;
+              const ny = (y - region.cy) / region.ry;
+              const inside = nx * nx + ny * ny <= 1;
 
-            if (x < analysisCx) {
-              leftL += lab.L;
-              leftCount += 1;
-            } else {
-              rightL += lab.L;
-              rightCount += 1;
+              if (!inside) continue;
+
+              region.sumL += lab.L;
+              region.sumA += lab.a;
+              region.sumB += lab.b;
+              region.sumR += r;
+              region.sumG += g;
+              region.sumBl += b;
+              region.count += 1;
             }
           }
         }
 
         cctx.putImageData(cutoutData, 0, 0);
-
         const cutoutUrl = cutoutCanvas.toDataURL("image/png");
         setCutoutSrc(cutoutUrl);
 
-        const brightnessMean = sampleCount > 0 ? sumL / sampleCount : 0;
-        const leftMean = leftCount > 0 ? leftL / leftCount : 0;
-        const rightMean = rightCount > 0 ? rightL / rightCount : 0;
-        const symmetryDelta = Math.abs(leftMean - rightMean);
-
-        const brightnessOk = brightnessMean >= 45 && brightnessMean <= 82;
-        const symmetryOk = symmetryDelta <= 8;
-        const resolutionOk = img.naturalWidth >= 480 && img.naturalHeight >= 480;
-
-        if (sampleCount < 300) {
-          setUploadedImage({
-            src,
-            name: file.name,
-            width: img.naturalWidth,
-            height: img.naturalHeight,
-          });
-          setAnalysis(null);
-          return;
-        }
-
-        const avgLab = {
-          L: sumL / sampleCount,
-          a: sumA / sampleCount,
-          b: sumB / sampleCount,
-        };
-
-        const lch = labToLch(avgLab.L, avgLab.a, avgLab.b);
-        const avgRgb = {
-          r: Math.round(sumR / sampleCount),
-          g: Math.round(sumG / sampleCount),
-          b: Math.round(sumBl / sampleCount),
-        };
-
-        const tone = scoreToneFromLab(avgLab.L, avgLab.a, avgLab.b);
-        const confidence = getConfidence(sampleCount, brightnessOk, symmetryOk, resolutionOk);
-
-        const nextAnalysis: AnalysisResult = {
-          avgLab,
-          lch,
-          tone,
-          confidence,
-          sampleCount,
-          avgRgb,
-          hex: rgb255ToHex(avgRgb),
-          quality: {
-            brightnessOk,
-            symmetryOk,
-            resolutionOk,
-          },
-        };
+        const validRegions = accum.filter((region) => region.count >= 120);
 
         setUploadedImage({
           src,
@@ -277,6 +302,139 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
           width: img.naturalWidth,
           height: img.naturalHeight,
         });
+
+        if (validRegions.length < 2) {
+          setAnalysis(null);
+          return;
+        }
+
+        const regionAnalyses: RegionAnalysis[] = validRegions.map((region) => {
+          const avgLab = {
+            L: region.sumL / region.count,
+            a: region.sumA / region.count,
+            b: region.sumB / region.count,
+          };
+          const toneScore = getRegionToneScore(avgLab);
+
+          const avgRgb = {
+            r: Math.round(region.sumR / region.count),
+            g: Math.round(region.sumG / region.count),
+            b: Math.round(region.sumBl / region.count),
+          };
+
+          return {
+            name: region.key,
+            label: region.label,
+            avgLab,
+            lch: toneScore.lch,
+            avgRgb,
+            hex: rgb255ToHex(avgRgb),
+            sampleCount: region.count,
+            warmScore: toneScore.warm,
+            coolScore: toneScore.cool,
+            tone: toneScore.tone,
+          };
+        });
+
+        const totalWeight = regionAnalyses.reduce((acc, region) => acc + region.sampleCount, 0);
+
+        const avgLab = {
+          L:
+            regionAnalyses.reduce((acc, region) => acc + region.avgLab.L * region.sampleCount, 0) /
+            totalWeight,
+          a:
+            regionAnalyses.reduce((acc, region) => acc + region.avgLab.a * region.sampleCount, 0) /
+            totalWeight,
+          b:
+            regionAnalyses.reduce((acc, region) => acc + region.avgLab.b * region.sampleCount, 0) /
+            totalWeight,
+        };
+
+        const avgRgb = {
+          r:
+            Math.round(
+              regionAnalyses.reduce((acc, region) => acc + region.avgRgb.r * region.sampleCount, 0) / totalWeight
+            ),
+          g:
+            Math.round(
+              regionAnalyses.reduce((acc, region) => acc + region.avgRgb.g * region.sampleCount, 0) / totalWeight
+            ),
+          b:
+            Math.round(
+              regionAnalyses.reduce((acc, region) => acc + region.avgRgb.b * region.sampleCount, 0) / totalWeight
+            ),
+        };
+
+        const lch = labToLch(avgLab.L, avgLab.a, avgLab.b);
+
+        const totalWarm = regionAnalyses.reduce((acc, region) => acc + region.warmScore, 0);
+        const totalCool = regionAnalyses.reduce((acc, region) => acc + region.coolScore, 0);
+        const scoreGap = totalWarm - totalCool;
+
+        const regionHueSpread =
+          regionAnalyses.length >= 2
+            ? Math.max(...regionAnalyses.map((r) => r.lch.h)) - Math.min(...regionAnalyses.map((r) => r.lch.h))
+            : 0;
+
+        const regionBSpread =
+          regionAnalyses.length >= 2
+            ? Math.max(...regionAnalyses.map((r) => r.avgLab.b)) - Math.min(...regionAnalyses.map((r) => r.avgLab.b))
+            : 0;
+
+        const leftRegion = regionAnalyses.find((r) => r.name === "leftCheek");
+        const rightRegion = regionAnalyses.find((r) => r.name === "rightCheek");
+
+        const symmetryDelta =
+          leftRegion && rightRegion ? Math.abs(leftRegion.avgLab.L - rightRegion.avgLab.L) : 99;
+
+        const brightnessOk = avgLab.L >= 45 && avgLab.L <= 82;
+        const symmetryOk = symmetryDelta <= 8;
+        const resolutionOk = img.naturalWidth >= 480 && img.naturalHeight >= 480;
+        const regionAgreementOk = regionHueSpread <= 26 && regionBSpread <= 8;
+
+        let tone: "Warm" | "Cool" | "Neutral" = "Neutral";
+
+        const warmRegionCount = regionAnalyses.filter((r) => r.tone === "Warm").length;
+        const coolRegionCount = regionAnalyses.filter((r) => r.tone === "Cool").length;
+
+        if (scoreGap >= 2.2 && warmRegionCount >= 2 && regionAgreementOk) {
+          tone = "Warm";
+        } else if (scoreGap <= -2.2 && coolRegionCount >= 2 && regionAgreementOk) {
+          tone = "Cool";
+        } else {
+          tone = "Neutral";
+        }
+
+        const confidence = getConfidence({
+          sampleCount: totalWeight,
+          brightnessOk,
+          symmetryOk,
+          resolutionOk,
+          regionAgreementOk,
+        });
+
+        const nextAnalysis: AnalysisResult = {
+          avgLab,
+          lch,
+          tone,
+          confidence,
+          sampleCount: totalWeight,
+          avgRgb,
+          hex: rgb255ToHex(avgRgb),
+          quality: {
+            brightnessOk,
+            symmetryOk,
+            resolutionOk,
+            regionAgreementOk,
+          },
+          regions: regionAnalyses,
+          scoreSummary: {
+            warm: totalWarm,
+            cool: totalCool,
+            gap: Math.abs(scoreGap),
+          },
+        };
+
         setAnalysis(nextAnalysis);
       };
 
@@ -291,7 +449,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
       <SectionHeader
         eyebrow="Personal Color"
         title="Face Lab Analyzer"
-        description="얼굴 사진의 중앙 피부 영역을 기준으로 Lab, hue angle, chroma를 계산하고 웜/쿨 경향을 추정합니다. 현재 버전은 프론트엔드 기반 근사 분석이며, 촬영 조건에 따라 결과가 달라질 수 있습니다."
+        description="좌볼, 우볼, 턱의 피부 영역을 따로 분석한 뒤 Lab, hue angle, chroma, 부위 간 일관성을 함께 반영해 웜/쿨 성향을 추정합니다. 조명과 촬영 환경에 따라 결과는 달라질 수 있습니다."
       />
 
       <div
@@ -316,7 +474,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
           </div>
 
           <div className="note-box note-blue" style={{ marginTop: 16 }}>
-            분석은 피부 중심부만 사용하고, 표시용 누끼는 머리/눈/입이 유지되도록 별도 마스크를 사용합니다.
+            분석은 좌볼, 우볼, 턱의 피부 ROI를 각각 따로 계산합니다. 세 부위 결과가 서로 다르면 웜/쿨을 강하게 단정하지 않고 Neutral 쪽으로 보수적으로 처리합니다.
           </div>
 
           <input
@@ -370,6 +528,14 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                 <>
                   <div className="analysis-grid">
                     <div className="metric-card">
+                      <div className="metric-label">Tone</div>
+                      <div className="metric-value">{analysis.tone}</div>
+                    </div>
+                    <div className="metric-card">
+                      <div className="metric-label">Confidence</div>
+                      <div className="metric-value">{analysis.confidence}</div>
+                    </div>
+                    <div className="metric-card">
                       <div className="metric-label">L*</div>
                       <div className="metric-value">{round(analysis.avgLab.L)}</div>
                     </div>
@@ -385,14 +551,6 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                       <div className="metric-label">h°</div>
                       <div className="metric-value">{round(analysis.lch.h)}</div>
                     </div>
-                    <div className="metric-card">
-                      <div className="metric-label">C*ab</div>
-                      <div className="metric-value">{round(analysis.lch.C)}</div>
-                    </div>
-                    <div className="metric-card">
-                      <div className="metric-label">Tone</div>
-                      <div className="metric-value">{analysis.tone}</div>
-                    </div>
                   </div>
 
                   <div className="result-summary-card">
@@ -404,6 +562,28 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                     </div>
                   </div>
 
+                  <div className="roi-grid">
+                    {analysis.regions.map((region) => (
+                      <div key={region.name} className="roi-card">
+                        <div className="roi-card-top">
+                          <div>
+                            <div className="roi-title">{region.label}</div>
+                            <div className="roi-subtitle">
+                              {region.tone} · {region.sampleCount} px
+                            </div>
+                          </div>
+                          <div className="roi-swatch" style={{ background: region.hex }} />
+                        </div>
+
+                        <div className="roi-lines">
+                          <div>Lab ({round(region.avgLab.L)}, {round(region.avgLab.a)}, {round(region.avgLab.b)})</div>
+                          <div>h° {round(region.lch.h)} · C*ab {round(region.lch.C)}</div>
+                          <div>Warm {round(region.warmScore)} · Cool {round(region.coolScore)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
                   <div className="quality-grid">
                     <div className={`quality-item ${analysis.quality.brightnessOk ? "quality-ok" : "quality-bad"}`}>
                       노출 적정: {analysis.quality.brightnessOk ? "통과" : "재촬영 권장"}
@@ -413,6 +593,9 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                     </div>
                     <div className={`quality-item ${analysis.quality.resolutionOk ? "quality-ok" : "quality-bad"}`}>
                       해상도: {analysis.quality.resolutionOk ? "양호" : "낮음"}
+                    </div>
+                    <div className={`quality-item ${analysis.quality.regionAgreementOk ? "quality-ok" : "quality-bad"}`}>
+                      부위 일관성: {analysis.quality.regionAgreementOk ? "양호" : "편차 큼"}
                     </div>
                   </div>
 
@@ -441,7 +624,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
             </>
           ) : (
             <div className="empty-box">
-              아직 업로드된 얼굴 사진이 없습니다. 정면 얼굴 사진을 올리면 피부색 근사 분석과 얼굴 누끼를 생성합니다.
+              아직 업로드된 얼굴 사진이 없습니다. 정면 얼굴 사진을 올리면 좌볼/우볼/턱 기준 피부색 분석과 얼굴 누끼를 생성합니다.
             </div>
           )}
         </div>
