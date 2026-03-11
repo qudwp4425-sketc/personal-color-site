@@ -23,7 +23,30 @@ import {
   yToB,
 } from "../lib/color";
 
-export default function SimulatorSection() {
+type AppliedPortrait = {
+  src: string;
+  cutoutSrc: string;
+  analysis: {
+    avgLab: { L: number; a: number; b: number };
+    lch: { L: number; C: number; h: number };
+    tone: "Warm" | "Cool" | "Neutral";
+    confidence: "High" | "Medium" | "Low";
+    sampleCount: number;
+    avgRgb: { r: number; g: number; b: number };
+    hex: string;
+    quality: {
+      brightnessOk: boolean;
+      symmetryOk: boolean;
+      resolutionOk: boolean;
+    };
+  };
+} | null;
+
+type SimulatorSectionProps = {
+  appliedPortrait: AppliedPortrait;
+};
+
+export default function SimulatorSection({ appliedPortrait }: SimulatorSectionProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -388,6 +411,29 @@ export default function SimulatorSection() {
         title="CIELAB Space Simulator"
         description="고정된 L*에서 a*–b* 평면을 탐색하고, Lab 입력, RGB 입력, 이미지 샘플링을 통해 실제 색상과 좌표를 연결해 볼 수 있습니다."
       />
+
+      {appliedPortrait ? (
+        <div className="card portrait-apply-card">
+          <div className="row-between-wrap" style={{ marginBottom: 16 }}>
+            <div>
+              <h3 className="card-title" style={{ marginBottom: 8 }}>Applied Portrait Preview</h3>
+              <div className="feature-text">
+                퍼스널컬러 도구에서 가져온 얼굴 누끼입니다. 현재 선택한 Lab 색이 배경색으로 즉시 반영됩니다.
+              </div>
+            </div>
+
+            <div className="chip-row" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <InfoChip text={`Tone ${appliedPortrait.analysis.tone}`} />
+              <InfoChip text={`Confidence ${appliedPortrait.analysis.confidence}`} secondary />
+              <InfoChip text={selectedColor.hex} secondary />
+            </div>
+          </div>
+
+          <div className="portrait-stage-large" style={{ background: selectedColor.hex }}>
+            <img src={appliedPortrait.cutoutSrc} alt="Applied portrait cutout" className="portrait-stage-image" />
+          </div>
+        </div>
+      ) : null}
 
       <div
         className="simulator-grid"
