@@ -71,6 +71,10 @@ function getConfidence(sampleCount: number, brightnessOk: boolean, symmetryOk: b
   return "Low" as const;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
 export default function PersonalColorSection({ onApplyToSimulator }: PersonalColorSectionProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -134,10 +138,17 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
         const w = sourceCanvas.width;
         const h = sourceCanvas.height;
 
-        const cx = w * 0.5;
-        const cy = h * 0.48;
-        const rx = w * 0.2;
-        const ry = h * 0.28;
+        // 표시용 큰 실루엣: 머리/눈/입 포함
+        const displayCx = w * 0.5;
+        const displayCy = h * 0.47;
+        const displayRx = w * 0.26;
+        const displayRy = h * 0.40;
+
+        // 분석용 중앙 피부 영역: 얼굴 중심부 위주
+        const analysisCx = w * 0.5;
+        const analysisCy = h * 0.50;
+        const analysisRx = w * 0.18;
+        const analysisRy = h * 0.24;
 
         let sumL = 0;
         let sumA = 0;
@@ -159,22 +170,32 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
             const g = data[idx + 1];
             const b = data[idx + 2];
 
-            const nx = (x - cx) / rx;
-            const ny = (y - cy) / ry;
-            const inFaceEllipse = nx * nx + ny * ny <= 1;
+            // -------------------------
+            // 1) 표시용 누끼 마스크
+            // -------------------------
+            const dnx = (x - displayCx) / displayRx;
+            const dny = (y - displayCy) / displayRy;
+            const displayDist = dnx * dnx + dny * dny;
 
-            if (!inFaceEllipse) {
+            if (displayDist > 1.08) {
               out[idx + 3] = 0;
-              continue;
+            } else {
+              // 가장자리 feather
+              const alphaFactor = displayDist <= 0.9 ? 1 : clamp((1.08 - displayDist) / (1.08 - 0.9), 0, 1);
+              out[idx + 3] = Math.round(255 * alphaFactor);
             }
+
+            // -------------------------
+            // 2) 분석용 피부 ROI
+            // -------------------------
+            const anx = (x - analysisCx) / analysisRx;
+            const any = (y - analysisCy) / analysisRy;
+            const inAnalysisEllipse = anx * anx + any * any <= 1;
+
+            if (!inAnalysisEllipse) continue;
+            if (!isSkinLike(r, g, b)) continue;
 
             const lab = srgb255ToLab(r, g, b);
-            const keep = isSkinLike(r, g, b);
-
-            if (!keep) {
-              out[idx + 3] = 0;
-              continue;
-            }
 
             sumL += lab.L;
             sumA += lab.a;
@@ -184,7 +205,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
             sumBl += b;
             sampleCount += 1;
 
-            if (x < cx) {
+            if (x < analysisCx) {
               leftL += lab.L;
               leftCount += 1;
             } else {
@@ -295,8 +316,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
           </div>
 
           <div className="note-box note-blue" style={{ marginTop: 16 }}>
-            현재 버전은 얼굴 랜드마크 모델 없이 중앙 타원형 얼굴 ROI와 피부색 휴리스틱으로 분석합니다.
-            정확한 퍼스널컬러 진단이 아니라 피부색 경향 추정용입니다.
+            분석은 피부 중심부만 사용하고, 표시용 누끼는 머리/눈/입이 유지되도록 별도 마스크를 사용합니다.
           </div>
 
           <input
