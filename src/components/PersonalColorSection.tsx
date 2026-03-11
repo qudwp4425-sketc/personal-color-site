@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { InfoChip, SectionHeader } from "./Cards";
-import { clamp, labToLch, round, srgb255ToLab, rgb255ToHex } from "../lib/color";
+import { labToLch, round, srgb255ToLab, rgb255ToHex } from "../lib/color";
 
 type AnalysisResult = {
   avgLab: { L: number; a: number; b: number };
