@@ -30,6 +30,8 @@ export default function SimulatorSection() {
   const imagePreviewRef = useRef<HTMLImageElement | null>(null);
   const imageSamplingCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  const [planeDisplaySize, setPlaneDisplaySize] = useState(PLANE_SIZE);
+
   const [L, setL] = useState(60);
   const [selected, setSelected] = useState({ L: 60, a: 20, b: 20 });
   const [inputValues, setInputValues] = useState({ L: "60", a: "20", b: "20" });
@@ -58,6 +60,32 @@ export default function SimulatorSection() {
   );
 
   useEffect(() => {
+    const element = wrapperRef.current;
+    if (!element) return;
+
+    const updateSize = () => {
+      const next = Math.min(element.clientWidth || PLANE_SIZE, PLANE_SIZE);
+      setPlaneDisplaySize(next);
+    };
+
+    updateSize();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => updateSize());
+      observer.observe(element);
+      window.addEventListener("resize", updateSize);
+
+      return () => {
+        observer.disconnect();
+        window.removeEventListener("resize", updateSize);
+      };
+    }
+
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
+  }, []);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -72,11 +100,12 @@ export default function SimulatorSection() {
       for (let x = 0; x < PLANE_SIZE; x += 1) {
         const a = xToA(x);
         const { rgb, inGamut } = labToSrgb(L, a, b);
-        data[idx += 0] = Math.round(rgb.r * 255);
-        data[idx += 1] = Math.round(rgb.g * 255);
-        data[idx += 1] = Math.round(rgb.b * 255);
-        data[idx += 1] = inGamut ? 255 : 145;
-        idx += 1;
+
+        data[idx] = Math.round(rgb.r * 255);
+        data[idx + 1] = Math.round(rgb.g * 255);
+        data[idx + 2] = Math.round(rgb.b * 255);
+        data[idx + 3] = inGamut ? 255 : 145;
+        idx += 4;
       }
     }
 
@@ -104,38 +133,68 @@ export default function SimulatorSection() {
     return () => window.removeEventListener("paste", handleWindowPaste);
   }, []);
 
-  const updateHoverFromEvent = (event: React.PointerEvent<HTMLDivElement>) => {
+  const getPlanePointerData = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = wrapperRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    setHover({ L, a: xToA(x), b: yToB(y), x: clamp(x, 0, PLANE_SIZE), y: clamp(y, 0, PLANE_SIZE) });
+    if (!rect || rect.width === 0 || rect.height === 0) return null;
+
+    const displayX = clamp(event.clientX - rect.left, 0, rect.width);
+    const displayY = clamp(event.clientY - rect.top, 0, rect.height);
+
+    const planeX = clamp((displayX / rect.width) * PLANE_SIZE, 0, PLANE_SIZE);
+    const planeY = clamp((displayY / rect.height) * PLANE_SIZE, 0, PLANE_SIZE);
+
+    return {
+      displayX,
+      displayY,
+      planeX,
+      planeY,
+      a: xToA(planeX),
+      b: yToB(planeY),
+    };
+  };
+
+  const updateHoverFromEvent = (event: React.PointerEvent<HTMLDivElement>) => {
+    const point = getPlanePointerData(event);
+    if (!point) return;
+
+    setHover({
+      L,
+      a: point.a,
+      b: point.b,
+      x: point.displayX,
+      y: point.displayY,
+    });
   };
 
   const handlePlanePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     updateHoverFromEvent(event);
     if (!isTracking) return;
 
-    const rect = wrapperRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const next = { L, a: xToA(x), b: yToB(y) };
+    const point = getPlanePointerData(event);
+    if (!point) return;
 
+    const next = { L, a: point.a, b: point.b };
     setSelected(next);
-    setInputValues({ L: String(round(next.L, 2)), a: String(round(next.a, 2)), b: String(round(next.b, 2)) });
+    setInputValues({
+      L: String(round(next.L, 2)),
+      a: String(round(next.a, 2)),
+      b: String(round(next.b, 2)),
+    });
   };
 
   const handlePlanePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     setIsTracking(true);
-    const rect = wrapperRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const next = { L, a: xToA(x), b: yToB(y) };
 
+    const point = getPlanePointerData(event);
+    if (!point) return;
+
+    const next = { L, a: point.a, b: point.b };
     setSelected(next);
-    setInputValues({ L: String(round(next.L, 2)), a: String(round(next.a, 2)), b: String(round(next.b, 2)) });
+    setInputValues({
+      L: String(round(next.L, 2)),
+      a: String(round(next.a, 2)),
+      b: String(round(next.b, 2)),
+    });
   };
 
   const readImageSampleFromEvent = (event: React.PointerEvent<HTMLImageElement>) => {
@@ -285,12 +344,19 @@ export default function SimulatorSection() {
 
   const imagePreviewDimensions = useMemo(() => {
     if (!uploadedImage) return null;
-    const scale = Math.min(IMAGE_PREVIEW_MAX_WIDTH / uploadedImage.width, IMAGE_PREVIEW_MAX_HEIGHT / uploadedImage.height, 1);
+    const scale = Math.min(
+      IMAGE_PREVIEW_MAX_WIDTH / uploadedImage.width,
+      IMAGE_PREVIEW_MAX_HEIGHT / uploadedImage.height,
+      1
+    );
     return {
       width: Math.round(uploadedImage.width * scale),
       height: Math.round(uploadedImage.height * scale),
     };
   }, [uploadedImage]);
+
+  const selectedDotLeft = (aToX(selected.a) / PLANE_SIZE) * planeDisplaySize;
+  const selectedDotTop = (bToY(selected.b) / PLANE_SIZE) * planeDisplaySize;
 
   return (
     <section id="simulator" className="section">
@@ -300,19 +366,36 @@ export default function SimulatorSection() {
         description="고정된 L*에서 a*–b* 평면을 탐색하고, Lab 입력, RGB 입력, 이미지 샘플링을 통해 실제 색상과 좌표를 연결해 볼 수 있습니다."
       />
 
-      <div className="simulator-grid">
-        <div className="card">
-          <div className="row-between-wrap">
-            <div>
+      <div
+        className="simulator-grid"
+        style={{
+          display: "grid",
+          gap: 24,
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 340px), 1fr))",
+          alignItems: "start",
+        }}
+      >
+        <div className="card" style={{ minWidth: 0 }}>
+          <div
+            className="row-between-wrap"
+            style={{
+              display: "flex",
+              gap: 20,
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ minWidth: 0, flex: "1 1 280px" }}>
               <h3 className="card-title">a*–b* Plane at Fixed L*</h3>
-              <div className="chip-row">
+              <div className="chip-row" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <InfoChip text={`L* ${round(L, 2)}`} />
                 <InfoChip text={`a* ${A_MIN} to ${A_MAX}`} secondary />
                 <InfoChip text={`b* ${B_MIN} to ${B_MAX}`} secondary />
               </div>
             </div>
 
-            <div className="slider-wrap">
+            <div className="slider-wrap" style={{ width: "100%", maxWidth: 420, flex: "1 1 280px", minWidth: 0 }}>
               <div className="row-between">
                 <span className="small-label">Lightness (L*)</span>
                 <span className="small-muted">{round(L, 2)}</span>
@@ -335,26 +418,54 @@ export default function SimulatorSection() {
             </div>
           </div>
 
-          <div className="plane-info-grid">
-            <div>
+          <div
+            className="plane-info-grid"
+            style={{
+              display: "grid",
+              gap: 24,
+              gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))",
+              alignItems: "start",
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
               <div className="small-muted-row">Hover to inspect · Drag to select</div>
 
               <div
                 ref={wrapperRef}
                 className="canvas-wrap"
-                style={{ width: PLANE_SIZE, height: PLANE_SIZE }}
+                style={{
+                  width: "100%",
+                  maxWidth: PLANE_SIZE,
+                  aspectRatio: "1 / 1",
+                  height: "auto",
+                  margin: "0 auto",
+                  touchAction: "none",
+                }}
                 onPointerMove={handlePlanePointerMove}
                 onPointerLeave={() => setHover(null)}
                 onPointerDown={handlePlanePointerDown}
               >
-                <canvas ref={canvasRef} width={PLANE_SIZE} height={PLANE_SIZE} className="canvas" />
+                <canvas
+                  ref={canvasRef}
+                  width={PLANE_SIZE}
+                  height={PLANE_SIZE}
+                  className="canvas"
+                  style={{ width: "100%", height: "100%", display: "block" }}
+                />
                 <div className="cross-horizontal" />
                 <div className="cross-vertical" />
-                <div className="selected-dot" style={{ left: aToX(selected.a), top: bToY(selected.b) }} />
+                <div className="selected-dot" style={{ left: selectedDotLeft, top: selectedDotTop }} />
                 {hover ? <div className="hover-dot" style={{ left: hover.x, top: hover.y }} /> : null}
               </div>
 
-              <div className="axis-grid">
+              <div
+                className="axis-grid"
+                style={{
+                  display: "grid",
+                  gap: 12,
+                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                }}
+              >
                 <div className="axis-chip">top = +b* (yellow)</div>
                 <div className="axis-chip axis-right">right = +a* (red)</div>
                 <div className="axis-chip">left = −a* (green)</div>
@@ -362,21 +473,35 @@ export default function SimulatorSection() {
               </div>
             </div>
 
-            <div className="right-column">
-              <div className="two-col-grid">
+            <div className="right-column" style={{ minWidth: 0 }}>
+              <div
+                className="two-col-grid"
+                style={{
+                  display: "grid",
+                  gap: 16,
+                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                }}
+              >
                 <ColorInfoCard title="Hovered Color" swatch={hoverColor?.hex ?? "#e2e8f0"} lines={hoverLines} empty={!hover} />
                 <ColorInfoCard title="Selected Color" swatch={selectedColor.hex} lines={selectedLines} />
               </div>
 
               <div className="card">
                 <h3 className="card-title">Set Lab Coordinates</h3>
-                <div className="form-grid">
+                <div
+                  className="form-grid"
+                  style={{
+                    display: "grid",
+                    gap: 12,
+                    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+                  }}
+                >
                   <Field label="L*" value={inputValues.L} onChange={(value) => setInputValues((prev) => ({ ...prev, L: value }))} onCommit={applyInput} min={0} max={100} />
                   <Field label="a*" value={inputValues.a} onChange={(value) => setInputValues((prev) => ({ ...prev, a: value }))} onCommit={applyInput} min={A_MIN} max={A_MAX} />
                   <Field label="b*" value={inputValues.b} onChange={(value) => setInputValues((prev) => ({ ...prev, b: value }))} onCommit={applyInput} min={B_MIN} max={B_MAX} />
                 </div>
 
-                <div className="button-row">
+                <div className="button-row" style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                   <button className="btn btn-primary" onClick={applyInput}>Apply Lab</button>
                   <button className="btn btn-secondary" onClick={resetAll}>Reset</button>
                 </div>
@@ -385,7 +510,7 @@ export default function SimulatorSection() {
           </div>
         </div>
 
-        <div className="right-column">
+        <div className="right-column" style={{ minWidth: 0 }}>
           <div className="card">
             <h3 className="card-title">Image Sampler</h3>
 
@@ -402,7 +527,7 @@ export default function SimulatorSection() {
               }}
             />
 
-            <div className="button-row">
+            <div className="button-row" style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
               <button className="btn btn-primary" onClick={() => imageInputRef.current?.click()}>
                 Upload Image
               </button>
@@ -434,24 +559,26 @@ export default function SimulatorSection() {
             {uploadedImage ? (
               <>
                 <div className="image-meta">
-                  <div className="chip-row">
+                  <div className="chip-row" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                     <InfoChip text={uploadedImage.name} />
                     <InfoChip text={imageSourceLabel} secondary />
                     <InfoChip text={`${uploadedImage.width} × ${uploadedImage.height}`} secondary />
                   </div>
 
-                  <div className="image-frame">
-                    <div className="image-relative">
+                  <div className="image-frame" style={{ width: "100%", overflow: "hidden" }}>
+                    <div className="image-relative" style={{ width: "100%" }}>
                       <img
                         ref={imagePreviewRef}
                         src={uploadedImage.src}
                         alt="Uploaded sample"
                         className="preview-image"
                         style={{
-                          maxWidth: IMAGE_PREVIEW_MAX_WIDTH,
+                          display: "block",
+                          width: "100%",
+                          height: "auto",
+                          maxWidth: imagePreviewDimensions?.width ?? IMAGE_PREVIEW_MAX_WIDTH,
                           maxHeight: IMAGE_PREVIEW_MAX_HEIGHT,
-                          width: imagePreviewDimensions?.width ?? "auto",
-                          height: imagePreviewDimensions?.height ?? "auto",
+                          objectFit: "contain",
                         }}
                         onPointerMove={handleImagePointerMove}
                         onPointerLeave={() => setImageHover(null)}
@@ -491,13 +618,20 @@ export default function SimulatorSection() {
           <div className="card">
             <h3 className="card-title">Set RGB Coordinates</h3>
 
-            <div className="form-grid form-grid-sidebar">
+            <div
+              className="form-grid form-grid-sidebar"
+              style={{
+                display: "grid",
+                gap: 12,
+                gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+              }}
+            >
               <Field label="R" value={rgbInputValues.r} onChange={(value) => setRgbInputValues((prev) => ({ ...prev, r: value }))} onCommit={applyRgbInput} min={0} max={255} />
               <Field label="G" value={rgbInputValues.g} onChange={(value) => setRgbInputValues((prev) => ({ ...prev, g: value }))} onCommit={applyRgbInput} min={0} max={255} />
               <Field label="B" value={rgbInputValues.b} onChange={(value) => setRgbInputValues((prev) => ({ ...prev, b: value }))} onCommit={applyRgbInput} min={0} max={255} />
             </div>
 
-            <div className="button-row">
+            <div className="button-row" style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
               <button className="btn btn-primary" onClick={applyRgbInput}>Apply RGB</button>
               <button className="btn btn-secondary" onClick={resetAll}>Reset</button>
             </div>
