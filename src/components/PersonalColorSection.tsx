@@ -75,10 +75,7 @@ function isSkinLike(r: number, g: number, b: number) {
   return rgbRule && ycbcrRule;
 }
 
-function hueDistance(h1: number, h2: number) {
-  const diff = Math.abs(h1 - h2);
-  return Math.min(diff, 360 - diff);
-}
+
 
 function getRegionToneScore(lab: { L: number; a: number; b: number }) {
   const lch = labToLch(lab.L, lab.a, lab.b);
