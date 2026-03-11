@@ -37,7 +37,7 @@ export default function SimulatorSection() {
   const [inputValues, setInputValues] = useState({ L: "60", a: "20", b: "20" });
   const [rgbInputValues, setRgbInputValues] = useState({ r: "191", g: "128", b: "101" });
   const [hover, setHover] = useState<null | { L: number; a: number; b: number; x: number; y: number }>(null);
-  const [isTracking, setIsTracking] = useState(false);
+  const [isDraggingSelected, setIsDraggingSelected] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<null | { src: string; name: string; width: number; height: number }>(null);
   const [imageSourceLabel, setImageSourceLabel] = useState("업로드된 이미지");
   const [imageHover, setImageHover] = useState<null | {
@@ -58,6 +58,9 @@ export default function SimulatorSection() {
     () => (imageHover ? labToLch(imageHover.lab.L, imageHover.lab.a, imageHover.lab.b) : null),
     [imageHover]
   );
+
+  const selectedDotLeft = (aToX(selected.a) / PLANE_SIZE) * planeDisplaySize;
+  const selectedDotTop = (bToY(selected.b) / PLANE_SIZE) * planeDisplaySize;
 
   useEffect(() => {
     const element = wrapperRef.current;
@@ -113,9 +116,9 @@ export default function SimulatorSection() {
   }, [L]);
 
   useEffect(() => {
-    const stopTracking = () => setIsTracking(false);
-    window.addEventListener("pointerup", stopTracking);
-    return () => window.removeEventListener("pointerup", stopTracking);
+    const stopDragging = () => setIsDraggingSelected(false);
+    window.addEventListener("pointerup", stopDragging);
+    return () => window.removeEventListener("pointerup", stopDragging);
   }, []);
 
   useEffect(() => {
@@ -153,10 +156,7 @@ export default function SimulatorSection() {
     };
   };
 
-  const updateHoverFromEvent = (event: React.PointerEvent<HTMLDivElement>) => {
-    const point = getPlanePointerData(event);
-    if (!point) return;
-
+  const setHoverFromPoint = (point: { displayX: number; displayY: number; a: number; b: number }) => {
     setHover({
       L,
       a: point.a,
@@ -166,12 +166,19 @@ export default function SimulatorSection() {
     });
   };
 
-  const handlePlanePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    updateHoverFromEvent(event);
-    if (!isTracking) return;
+  const isPointerOnSelectedDot = (displayX: number, displayY: number) => {
+    const dx = displayX - selectedDotLeft;
+    const dy = displayY - selectedDotTop;
+    return Math.hypot(dx, dy) <= 24;
+  };
 
+  const handlePlanePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const point = getPlanePointerData(event);
     if (!point) return;
+
+    setHoverFromPoint(point);
+
+    if (!isDraggingSelected) return;
 
     const next = { L, a: point.a, b: point.b };
     setSelected(next);
@@ -183,10 +190,20 @@ export default function SimulatorSection() {
   };
 
   const handlePlanePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    setIsTracking(true);
-
     const point = getPlanePointerData(event);
     if (!point) return;
+
+    setHoverFromPoint(point);
+
+    if (event.pointerType === "touch") {
+      if (isPointerOnSelectedDot(point.displayX, point.displayY)) {
+        setIsDraggingSelected(true);
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      } else {
+        setIsDraggingSelected(false);
+      }
+      return;
+    }
 
     const next = { L, a: point.a, b: point.b };
     setSelected(next);
@@ -195,6 +212,14 @@ export default function SimulatorSection() {
       a: String(round(next.a, 2)),
       b: String(round(next.b, 2)),
     });
+    setIsDraggingSelected(true);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const handlePlanePointerLeave = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && !isDraggingSelected) {
+      setHover(null);
+    }
   };
 
   const readImageSampleFromEvent = (event: React.PointerEvent<HTMLImageElement>) => {
@@ -323,6 +348,7 @@ export default function SimulatorSection() {
     setRgbInputValues({ r: "191", g: "128", b: "101" });
     setHover(null);
     setImageHover(null);
+    setIsDraggingSelected(false);
   };
 
   const hoverLines =
@@ -354,9 +380,6 @@ export default function SimulatorSection() {
       height: Math.round(uploadedImage.height * scale),
     };
   }, [uploadedImage]);
-
-  const selectedDotLeft = (aToX(selected.a) / PLANE_SIZE) * planeDisplaySize;
-  const selectedDotTop = (bToY(selected.b) / PLANE_SIZE) * planeDisplaySize;
 
   return (
     <section id="simulator" className="section">
@@ -428,7 +451,7 @@ export default function SimulatorSection() {
             }}
           >
             <div style={{ minWidth: 0 }}>
-              <div className="small-muted-row">Hover to inspect · Drag to select</div>
+              <div className="small-muted-row">Hover to inspect · Drag the circle to select</div>
 
               <div
                 ref={wrapperRef}
@@ -442,7 +465,7 @@ export default function SimulatorSection() {
                   touchAction: "none",
                 }}
                 onPointerMove={handlePlanePointerMove}
-                onPointerLeave={() => setHover(null)}
+                onPointerLeave={handlePlanePointerLeave}
                 onPointerDown={handlePlanePointerDown}
               >
                 <canvas
@@ -458,18 +481,19 @@ export default function SimulatorSection() {
                 {hover ? <div className="hover-dot" style={{ left: hover.x, top: hover.y }} /> : null}
               </div>
 
-              <div
-                className="axis-grid"
-                style={{
-                  display: "grid",
-                  gap: 12,
-                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                }}
-              >
-                <div className="axis-chip">top = +b* (yellow)</div>
-                <div className="axis-chip axis-right">right = +a* (red)</div>
-                <div className="axis-chip">left = −a* (green)</div>
-                <div className="axis-chip axis-right">bottom = −b* (blue)</div>
+              <div style={{ overflowX: "auto", marginTop: 12 }}>
+                <div
+                  className="axis-chip"
+                  style={{
+                    display: "inline-block",
+                    minWidth: "100%",
+                    whiteSpace: "nowrap",
+                    textAlign: "center",
+                    padding: "10px 14px",
+                  }}
+                >
+                  top = +b* (yellow) · right = +a* (red) · left = −a* (green) · bottom = −b* (blue)
+                </div>
               </div>
             </div>
 
