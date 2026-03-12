@@ -342,6 +342,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
   const [cutoutSrc, setCutoutSrc] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [selectedDrapeId, setSelectedDrapeId] = useState<string>(DRAPE_PRESETS[0].id);
+  const [showRegionDetails, setShowRegionDetails] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -386,7 +387,6 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
   const resultLines = useMemo(() => {
     if (!analysis) return [];
     return [
-      `Lab (${round(analysis.avgLab.L)}, ${round(analysis.avgLab.a)}, ${round(analysis.avgLab.b)})`,
       `h° ${round(analysis.lch.h)} · C*ab ${round(analysis.lch.C)}`,
       `RGB ${analysis.avgRgb.r}, ${analysis.avgRgb.g}, ${analysis.avgRgb.b}`,
       `HEX ${analysis.hex}`,
@@ -594,6 +594,7 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
 
         const bestDrape = allDrapeItems[0];
         setSelectedDrapeId(bestDrape.id);
+        setShowRegionDetails(false);
 
         setAnalysis({
           avgLab,
@@ -698,25 +699,47 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                 {analysis ? <InfoChip text={`${analysis.sampleCount} sampled pixels`} secondary /> : null}
               </div>
 
-              <div className="portrait-compare-grid">
-                <div>
-                  <div className="mini-label">원본</div>
-                  <div className="portrait-frame">
-                    <img src={uploadedImage.src} alt="Uploaded portrait" className="portrait-image" />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="mini-label">누끼 + 드레이프 프리뷰</div>
-                  <div className="portrait-frame portrait-drape-stage" style={{ background: selectedDrape.hex }}>
-                    {cutoutSrc ? <img src={cutoutSrc} alt="Face cutout" className="portrait-image" /> : null}
-                    <div className="drape-neck-band" style={{ background: selectedDrape.hex }} />
-                  </div>
-                </div>
-              </div>
-
               {analysis ? (
                 <>
+                  <div className="drape-section drape-section-top">
+                    <div className="drape-header-row">
+                      <div>
+                        <div className="roi-title">드레이프 색 비교</div>
+                        <div className="roi-subtitle">
+                          추천 그룹: {analysis.drapeComparison.recommendedGroup}
+                        </div>
+                      </div>
+                      <div className="chip-row" style={{ marginTop: 0 }}>
+                        <InfoChip text={`Warm ${round(analysis.drapeComparison.warmAverage)}`} secondary />
+                        <InfoChip text={`Cool ${round(analysis.drapeComparison.coolAverage)}`} secondary />
+                      </div>
+                    </div>
+
+                    <div className="portrait-frame portrait-drape-stage portrait-drape-stage-top" style={{ background: selectedDrape.hex }}>
+                      {cutoutSrc ? <img src={cutoutSrc} alt="Face cutout" className="portrait-image" /> : null}
+                      <div className="drape-neck-band" style={{ background: selectedDrape.hex }} />
+                    </div>
+
+                    <div className="drape-grid" style={{ marginTop: 14 }}>
+                      {analysis.drapeComparison.items.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`drape-card ${selectedDrapeId === item.id ? "drape-card-active" : ""}`}
+                          onClick={() => setSelectedDrapeId(item.id)}
+                        >
+                          <div className="drape-color" style={{ background: item.hex }} />
+                          <div className="drape-meta">
+                            <div className="drape-name">{item.label}</div>
+                            <div className="drape-sub">
+                              {item.group} · {round(item.score)}
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="analysis-grid">
                     <div className="metric-card">
                       <div className="metric-label">Tone</div>
@@ -753,58 +776,36 @@ export default function PersonalColorSection({ onApplyToSimulator }: PersonalCol
                     </div>
                   </div>
 
-                  <div className="roi-grid">
-                    {analysis.regions.map((region) => (
-                      <div key={region.name} className="roi-card">
-                        <div className="roi-card-top">
-                          <div>
-                            <div className="roi-title">{region.label}</div>
-                            <div className="roi-subtitle">{region.sampleCount} px</div>
-                          </div>
-                          <div className="roi-swatch" style={{ background: region.hex }} />
-                        </div>
-
-                        <div className="roi-lines">
-                          <div>Lab ({round(region.avgLab.L)}, {round(region.avgLab.a)}, {round(region.avgLab.b)})</div>
-                          <div>h° {round(region.lch.h)} · C*ab {round(region.lch.C)}</div>
-                        </div>
-                      </div>
-                    ))}
+                  <div className="button-row region-toggle-row">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setShowRegionDetails((prev) => !prev)}
+                    >
+                      {showRegionDetails ? "좌볼/우볼/턱 값 숨기기" : "좌볼/우볼/턱 값 보기"}
+                    </button>
                   </div>
 
-                  <div className="drape-section">
-                    <div className="drape-header-row">
-                      <div>
-                        <div className="roi-title">드레이프 비교</div>
-                        <div className="roi-subtitle">
-                          추천 그룹: {analysis.drapeComparison.recommendedGroup}
-                        </div>
-                      </div>
-                      <div className="chip-row" style={{ marginTop: 0 }}>
-                        <InfoChip text={`Warm ${round(analysis.drapeComparison.warmAverage)}`} secondary />
-                        <InfoChip text={`Cool ${round(analysis.drapeComparison.coolAverage)}`} secondary />
-                      </div>
-                    </div>
-
-                    <div className="drape-grid">
-                      {analysis.drapeComparison.items.map((item) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          className={`drape-card ${selectedDrapeId === item.id ? "drape-card-active" : ""}`}
-                          onClick={() => setSelectedDrapeId(item.id)}
-                        >
-                          <div className="drape-color" style={{ background: item.hex }} />
-                          <div className="drape-meta">
-                            <div className="drape-name">{item.label}</div>
-                            <div className="drape-sub">
-                              {item.group} · {round(item.score)}
+                  {showRegionDetails ? (
+                    <div className="roi-grid">
+                      {analysis.regions.map((region) => (
+                        <div key={region.name} className="roi-card">
+                          <div className="roi-card-top">
+                            <div>
+                              <div className="roi-title">{region.label}</div>
+                              <div className="roi-subtitle">{region.sampleCount} px</div>
                             </div>
+                            <div className="roi-swatch" style={{ background: region.hex }} />
                           </div>
-                        </button>
+
+                          <div className="roi-lines">
+                            <div>Lab ({round(region.avgLab.L)}, {round(region.avgLab.a)}, {round(region.avgLab.b)})</div>
+                            <div>h° {round(region.lch.h)} · C*ab {round(region.lch.C)}</div>
+                          </div>
+                        </div>
                       ))}
                     </div>
-                  </div>
+                  ) : null}
 
                   <div className="quality-grid">
                     <div className={`quality-item ${analysis.quality.brightnessOk ? "quality-ok" : "quality-bad"}`}>

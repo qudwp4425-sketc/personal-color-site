@@ -809,3 +809,16 @@
   border-top-right-radius: 999px;
   opacity: 0.95;
 }
+
+.region-toggle-row {
+  margin-top: 16px;
+}
+
+.drape-section-top {
+  margin-bottom: 18px;
+}
+
+.portrait-drape-stage-top {
+  min-height: 360px;
+  margin-bottom: 0;
+}
