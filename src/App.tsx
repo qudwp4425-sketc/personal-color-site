@@ -4,6 +4,7 @@ import HeroSection from "./components/HeroSection";
 import AboutSection from "./components/AboutSection";
 import SimulatorSection from "./components/SimulatorSection";
 import PersonalColorSection from "./components/PersonalColorSection";
+import ColorCompareSection from "./components/ColorCompareSection";
 
 type AppliedPortrait = {
   src: string;
@@ -55,6 +56,7 @@ export default function App() {
       <div className="hero-bg" />
       <main className="main">
         <HeroSection />
+        <ColorCompareSection />
         <PersonalColorSection onApplyToSimulator={setAppliedPortrait} />
         <AboutSection />
         <SimulatorSection appliedPortrait={appliedPortrait} />
