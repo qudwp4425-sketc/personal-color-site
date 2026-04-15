@@ -160,6 +160,30 @@ export function labToSrgb(L: number, a: number, b: number) {
   };
 }
 
+type LabLike = { L: number; a: number; b: number } | { l: number; a: number; b: number };
+
+export function labToRgb(input: LabLike | number, a?: number, b?: number) {
+  let L: number;
+  let A: number;
+  let B: number;
+
+  if (typeof input === "number") {
+    L = input;
+    A = a ?? 0;
+    B = b ?? 0;
+  } else if ("L" in input) {
+    L = input.L;
+    A = input.a;
+    B = input.b;
+  } else {
+    L = input.l;
+    A = input.a;
+    B = input.b;
+  }
+
+  return labToSrgb(L, A, B).rgb255;
+}
+
 export function srgb255ToLab(r255: number, g255: number, b255: number) {
   const rgb = {
     r: clamp(r255, 0, 255) / 255,
