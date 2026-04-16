@@ -15,14 +15,11 @@ export default function HeroSection() {
           <a href="#simulator" className="btn btn-primary-link">
             시뮬레이터 열기
           </a>
-          <a href="#personal-color" className="btn btn-secondary-link">
-            퍼스널컬러 찾기
-          </a>
           <a href="#color-compare" className="btn btn-secondary-link">
             색상 비교
           </a>
-          <a href="#about" className="btn btn-secondary-link">
-            소개 보기
+          <a href="#personal-color" className="btn btn-secondary-link">
+            퍼스널컬러 찾기
           </a>
         </div>
 
