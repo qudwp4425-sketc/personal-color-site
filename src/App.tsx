@@ -1,7 +1,6 @@
 import { useState } from "react";
 import "./styles.css";
 import HeroSection from "./components/HeroSection";
-import AboutSection from "./components/AboutSection";
 import SimulatorSection from "./components/SimulatorSection";
 import PersonalColorSection from "./components/PersonalColorSection";
 import ColorCompareSection from "./components/ColorCompareSection";
@@ -57,9 +56,8 @@ export default function App() {
       <main className="main">
         <HeroSection />
         <ColorCompareSection />
-        <PersonalColorSection onApplyToSimulator={setAppliedPortrait} />
-        <AboutSection />
         <SimulatorSection appliedPortrait={appliedPortrait} />
+        <PersonalColorSection onApplyToSimulator={setAppliedPortrait} />
       </main>
     </div>
   );
