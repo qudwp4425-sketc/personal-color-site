@@ -11,11 +11,11 @@ export default function HeroSection() {
         </p>
 
         <div className="button-row">
-          <a href="#simulator" className="btn btn-primary-link">
-            시뮬레이터 열기
-          </a>
           <a href="#color-compare" className="btn btn-secondary-link">
             색상 비교
+          </a>
+          <a href="#simulator" className="btn btn-primary-link">
+            시뮬레이터 열기
           </a>
           <a href="#personal-color" className="btn btn-secondary-link">
             퍼스널컬러 찾기
