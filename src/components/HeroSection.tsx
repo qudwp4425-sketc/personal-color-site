@@ -4,10 +4,9 @@ export default function HeroSection() {
       <div className="hero-text-col">
         <div className="eyebrow">Personal Color Lab</div>
 
-        <h1>얼굴 사진 기반 퍼스널컬러 분석 & CIELAB 색상 시뮬레이터</h1>
+        <h1>CIELAB 색상 시뮬레이터</h1>
 
         <p>
-          얼굴 사진을 업로드해 퍼스널컬러를 분석하고 웜톤·쿨톤 드레이프 비교,
           Lab·RGB·LCh 기반 색상 시뮬레이션과 색상 비교 기능을 한 화면에서 확인할 수 있습니다.
         </p>
 
