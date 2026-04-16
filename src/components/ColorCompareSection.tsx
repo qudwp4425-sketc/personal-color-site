@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { clamp, labToSrgb, parseLabInput } from "../lib/color";
 
 type LabInputText = {
@@ -73,10 +73,55 @@ function getPreviewValue(value: string, fallback: number) {
   return parsed ?? fallback;
 }
 
+async function copyColorAsImage(cssColor: string) {
+  const size = 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Canvas context를 만들 수 없습니다.");
+  }
+
+  ctx.fillStyle = cssColor;
+  ctx.fillRect(0, 0, size, size);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((result) => resolve(result), "image/png");
+  });
+
+  if (!blob) {
+    throw new Error("이미지 blob 생성에 실패했습니다.");
+  }
+
+  if (!navigator.clipboard || !window.ClipboardItem) {
+    throw new Error("이 브라우저는 이미지 클립보드 복사를 지원하지 않습니다.");
+  }
+
+  await navigator.clipboard.write([
+    new ClipboardItem({
+      "image/png": blob,
+    }),
+  ]);
+}
+
 export default function ColorCompareSection() {
   const [color1, setColor1] = useState<LabInputText>({ L: "70", a: "12", b: "18" });
   const [color2, setColor2] = useState<LabInputText>({ L: "70", a: "4", b: "8" });
   const [color3, setColor3] = useState<LabInputText>({ L: "70", a: "-6", b: "-8" });
+
+  const [copyMessage, setCopyMessage] = useState<string>("");
+  const pressTimerRef = useRef<number | null>(null);
+  const copyingRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (pressTimerRef.current !== null) {
+        window.clearTimeout(pressTimerRef.current);
+      }
+    };
+  }, []);
 
   const previews = useMemo(() => {
     const items = [
@@ -95,13 +140,44 @@ export default function ColorCompareSection() {
       return {
         label: item.label,
         lab: { L, a, b },
-        hex: converted.hex,
-        rgb255: converted.rgb255,
         inGamut: converted.inGamut,
         cssColor: `rgb(${clamp(converted.rgb255.r, 0, 255)}, ${clamp(converted.rgb255.g, 0, 255)}, ${clamp(converted.rgb255.b, 0, 255)})`,
       };
     });
   }, [color1, color2, color3]);
+
+  const clearPressTimer = () => {
+    if (pressTimerRef.current !== null) {
+      window.clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+  };
+
+  const startPressCopy = (label: string, cssColor: string) => {
+    clearPressTimer();
+
+    pressTimerRef.current = window.setTimeout(async () => {
+      if (copyingRef.current) return;
+      copyingRef.current = true;
+
+      try {
+        await copyColorAsImage(cssColor);
+        setCopyMessage(`${label} 이미지가 클립보드에 복사되었습니다.`);
+      } catch (error) {
+        setCopyMessage(
+          error instanceof Error
+            ? `${label} 복사 실패: ${error.message}`
+            : `${label} 복사에 실패했습니다.`,
+        );
+      } finally {
+        copyingRef.current = false;
+      }
+    }, 500);
+  };
+
+  const endPressCopy = () => {
+    clearPressTimer();
+  };
 
   return (
     <section id="color-compare" className="section compare-section">
@@ -110,23 +186,31 @@ export default function ColorCompareSection() {
         <h2>Lab 색상 비교 툴</h2>
         <p className="section-description">
           Lab 값을 직접 입력해 3가지 색상을 가로로 나란히 놓고 육안으로 비교할 수 있습니다.
+          색상 박스를 길게 누르면 PNG 이미지로 복사됩니다.
         </p>
       </div>
+
+      {copyMessage ? <div className="compare-copy-message">{copyMessage}</div> : null}
 
       <div className="compare-stage">
         {previews.map((item) => (
           <div key={item.label} className="compare-stage-card">
             <div
-              className="compare-swatch"
+              className="compare-swatch compare-swatch-copyable"
               style={{ backgroundColor: item.cssColor }}
               aria-label={`${item.label} 색상 미리보기`}
+              title="길게 눌러 이미지 복사"
+              onPointerDown={() => startPressCopy(item.label, item.cssColor)}
+              onPointerUp={endPressCopy}
+              onPointerLeave={endPressCopy}
+              onPointerCancel={endPressCopy}
             />
             <div className="compare-stage-meta">
               <strong>{item.label}</strong>
-              <span>{item.hex}</span>
               <span>
-                RGB ({item.rgb255.r}, {item.rgb255.g}, {item.rgb255.b})
+                Lab ({item.lab.L.toFixed(1)}, {item.lab.a.toFixed(1)}, {item.lab.b.toFixed(1)})
               </span>
+              <span>{item.inGamut ? "sRGB 범위 내" : "일부 색역 클리핑"}</span>
             </div>
           </div>
         ))}
@@ -145,7 +229,6 @@ export default function ColorCompareSection() {
             <span>
               Lab ({item.lab.L.toFixed(1)}, {item.lab.a.toFixed(1)}, {item.lab.b.toFixed(1)})
             </span>
-            <span>{item.inGamut ? "sRGB 범위 내" : "일부 색역 클리핑"}</span>
           </div>
         ))}
       </div>

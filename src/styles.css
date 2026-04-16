@@ -1054,3 +1054,23 @@
     height: 180px;
   }
 }
+
+.compare-copy-message {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  color: #334155;
+  font-size: 0.92rem;
+}
+
+.compare-swatch-copyable {
+  cursor: copy;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.compare-swatch-copyable:active {
+  transform: scale(0.995);
+}
