@@ -23,50 +23,52 @@ function ColorEditor({ title, value, onChange }: ColorEditorProps) {
     <div className="compare-input-card">
       <h3>{title}</h3>
 
-      <label className="compare-field">
-        <span>L*</span>
-        <input
-          type="number"
-          step="0.1"
-          value={value.L}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              L: toSafeNumber(e.target.value, value.L),
-            })
-          }
-        />
-      </label>
+      <div className="compare-field-grid">
+        <label className="compare-field">
+          <span>L*</span>
+          <input
+            type="number"
+            step="0.1"
+            value={value.L}
+            onChange={(e) =>
+              onChange({
+                ...value,
+                L: toSafeNumber(e.target.value, value.L),
+              })
+            }
+          />
+        </label>
 
-      <label className="compare-field">
-        <span>a*</span>
-        <input
-          type="number"
-          step="0.1"
-          value={value.a}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              a: toSafeNumber(e.target.value, value.a),
-            })
-          }
-        />
-      </label>
+        <label className="compare-field">
+          <span>a*</span>
+          <input
+            type="number"
+            step="0.1"
+            value={value.a}
+            onChange={(e) =>
+              onChange({
+                ...value,
+                a: toSafeNumber(e.target.value, value.a),
+              })
+            }
+          />
+        </label>
 
-      <label className="compare-field">
-        <span>b*</span>
-        <input
-          type="number"
-          step="0.1"
-          value={value.b}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              b: toSafeNumber(e.target.value, value.b),
-            })
-          }
-        />
-      </label>
+        <label className="compare-field">
+          <span>b*</span>
+          <input
+            type="number"
+            step="0.1"
+            value={value.b}
+            onChange={(e) =>
+              onChange({
+                ...value,
+                b: toSafeNumber(e.target.value, value.b),
+              })
+            }
+          />
+        </label>
+      </div>
     </div>
   );
 }
@@ -107,34 +109,39 @@ export default function ColorCompareSection() {
         </p>
       </div>
 
+      <div className="compare-stage">
+        {previews.map((item) => (
+          <div key={item.label} className="compare-stage-card">
+            <div
+              className="compare-swatch"
+              style={{ backgroundColor: item.cssColor }}
+              aria-label={`${item.label} 색상 미리보기`}
+            />
+            <div className="compare-stage-meta">
+              <strong>{item.label}</strong>
+              <span>{item.hex}</span>
+              <span>
+                RGB ({item.rgb255.r}, {item.rgb255.g}, {item.rgb255.b})
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+
       <div className="compare-input-grid">
         <ColorEditor title="색상 1" value={color1} onChange={setColor1} />
         <ColorEditor title="색상 2" value={color2} onChange={setColor2} />
         <ColorEditor title="색상 3" value={color3} onChange={setColor3} />
       </div>
 
-      <div className="compare-preview-row">
+      <div className="compare-summary-grid">
         {previews.map((item) => (
-          <div key={item.label} className="compare-preview-card">
-            <div className="compare-swatch-wrap">
-              <div
-                className="compare-swatch"
-                style={{ backgroundColor: item.cssColor }}
-                aria-label={`${item.label} 색상 미리보기`}
-              />
-            </div>
-
-            <div className="compare-meta">
-              <strong>{item.label}</strong>
-              <span>
-                Lab ({item.lab.L.toFixed(1)}, {item.lab.a.toFixed(1)}, {item.lab.b.toFixed(1)})
-              </span>
-              <span>{item.hex}</span>
-              <span>
-                RGB ({item.rgb255.r}, {item.rgb255.g}, {item.rgb255.b})
-              </span>
-              <span>{item.inGamut ? "sRGB 범위 내" : "일부 색역 클리핑"}</span>
-            </div>
+          <div key={`${item.label}-summary`} className="compare-summary-card">
+            <strong>{item.label}</strong>
+            <span>
+              Lab ({item.lab.L.toFixed(1)}, {item.lab.a.toFixed(1)}, {item.lab.b.toFixed(1)})
+            </span>
+            <span>{item.inGamut ? "sRGB 범위 내" : "일부 색역 클리핑"}</span>
           </div>
         ))}
       </div>
