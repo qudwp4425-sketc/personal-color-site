@@ -7,70 +7,97 @@ type LabInputText = {
   b: string;
 };
 
+type ChannelKey = keyof LabInputText;
+
+type ChannelConfig = {
+  key: ChannelKey;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+};
+
 type ColorEditorProps = {
   title: string;
   value: LabInputText;
   onChange: (next: LabInputText) => void;
+  fallback: { L: number; a: number; b: number };
 };
 
-function ColorEditor({ title, value, onChange }: ColorEditorProps) {
+const CHANNELS: ChannelConfig[] = [
+  { key: "L", label: "L*", min: 0, max: 100, step: 0.1 },
+  { key: "a", label: "a*", min: -128, max: 127, step: 0.1 },
+  { key: "b", label: "b*", min: -128, max: 127, step: 0.1 },
+];
+
+function getPreviewValue(value: string, fallback: number) {
+  const parsed = parseLabInput(value);
+  return parsed ?? fallback;
+}
+
+function getSliderValue(value: string, fallback: number, min: number, max: number) {
+  const parsed = parseLabInput(value);
+  const numeric = parsed ?? fallback;
+  return clamp(numeric, min, max);
+}
+
+function formatSliderValue(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function ColorEditor({ title, value, onChange, fallback }: ColorEditorProps) {
   return (
     <div className="compare-input-card">
       <h3>{title}</h3>
 
       <div className="compare-field-grid">
-        <label className="compare-field">
-          <span>L*</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={value.L}
-            onChange={(e) =>
-              onChange({
-                ...value,
-                L: e.target.value,
-              })
-            }
-          />
-        </label>
+        {CHANNELS.map((channel) => {
+          const fallbackValue = fallback[channel.key];
+          const sliderValue = getSliderValue(
+            value[channel.key],
+            fallbackValue,
+            channel.min,
+            channel.max,
+          );
 
-        <label className="compare-field">
-          <span>a*</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={value.a}
-            onChange={(e) =>
-              onChange({
-                ...value,
-                a: e.target.value,
-              })
-            }
-          />
-        </label>
+          return (
+            <label key={channel.key} className="compare-field">
+              <span>{channel.label}</span>
 
-        <label className="compare-field">
-          <span>b*</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={value.b}
-            onChange={(e) =>
-              onChange({
-                ...value,
-                b: e.target.value,
-              })
-            }
-          />
-        </label>
+              <div className="compare-control-row">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={value[channel.key]}
+                  onChange={(e) =>
+                    onChange({
+                      ...value,
+                      [channel.key]: e.target.value,
+                    })
+                  }
+                />
+
+                <input
+                  className="compare-slider"
+                  type="range"
+                  min={channel.min}
+                  max={channel.max}
+                  step={channel.step}
+                  value={sliderValue}
+                  onChange={(e) =>
+                    onChange({
+                      ...value,
+                      [channel.key]: formatSliderValue(Number(e.target.value)),
+                    })
+                  }
+                />
+              </div>
+            </label>
+          );
+        })}
       </div>
     </div>
   );
-}
-
-function getPreviewValue(value: string, fallback: number) {
-  const parsed = parseLabInput(value);
-  return parsed ?? fallback;
 }
 
 async function copyColorAsImage(cssColor: string) {
@@ -107,6 +134,10 @@ async function copyColorAsImage(cssColor: string) {
 }
 
 export default function ColorCompareSection() {
+  const fallback1 = { L: 70, a: 12, b: 18 };
+  const fallback2 = { L: 70, a: 4, b: 8 };
+  const fallback3 = { L: 70, a: -6, b: -8 };
+
   const [color1, setColor1] = useState<LabInputText>({ L: "70", a: "12", b: "18" });
   const [color2, setColor2] = useState<LabInputText>({ L: "70", a: "4", b: "8" });
   const [color3, setColor3] = useState<LabInputText>({ L: "70", a: "-6", b: "-8" });
@@ -125,9 +156,9 @@ export default function ColorCompareSection() {
 
   const previews = useMemo(() => {
     const items = [
-      { label: "색상 1", value: color1, fallback: { L: 70, a: 12, b: 18 } },
-      { label: "색상 2", value: color2, fallback: { L: 70, a: 4, b: 8 } },
-      { label: "색상 3", value: color3, fallback: { L: 70, a: -6, b: -8 } },
+      { label: "색상 1", value: color1, fallback: fallback1 },
+      { label: "색상 2", value: color2, fallback: fallback2 },
+      { label: "색상 3", value: color3, fallback: fallback3 },
     ];
 
     return items.map((item) => {
@@ -140,7 +171,11 @@ export default function ColorCompareSection() {
       return {
         label: item.label,
         lab: { L, a, b },
-        cssColor: `rgb(${clamp(converted.rgb255.r, 0, 255)}, ${clamp(converted.rgb255.g, 0, 255)}, ${clamp(converted.rgb255.b, 0, 255)})`,
+        cssColor: `rgb(${clamp(converted.rgb255.r, 0, 255)}, ${clamp(
+          converted.rgb255.g,
+          0,
+          255,
+        )}, ${clamp(converted.rgb255.b, 0, 255)})`,
       };
     });
   }, [color1, color2, color3]);
@@ -188,7 +223,8 @@ export default function ColorCompareSection() {
         <p className="eyebrow">Color Compare</p>
         <h2>Lab 색상 비교 툴</h2>
         <p className="section-description">
-          Lab 값을 직접 입력해 3가지 색상을 가로로 나란히 놓고 육안으로 비교할 수 있습니다.
+          Lab 값을 직접 입력하거나 슬라이더로 조정해 3가지 색상을 가로로 나란히 놓고 육안으로
+          비교할 수 있습니다.
         </p>
       </div>
 
@@ -231,9 +267,24 @@ export default function ColorCompareSection() {
       </div>
 
       <div className="compare-input-grid">
-        <ColorEditor title="색상 1" value={color1} onChange={setColor1} />
-        <ColorEditor title="색상 2" value={color2} onChange={setColor2} />
-        <ColorEditor title="색상 3" value={color3} onChange={setColor3} />
+        <ColorEditor
+          title="색상 1"
+          value={color1}
+          onChange={setColor1}
+          fallback={fallback1}
+        />
+        <ColorEditor
+          title="색상 2"
+          value={color2}
+          onChange={setColor2}
+          fallback={fallback2}
+        />
+        <ColorEditor
+          title="색상 3"
+          value={color3}
+          onChange={setColor3}
+          fallback={fallback3}
+        />
       </div>
     </section>
   );

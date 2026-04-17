@@ -1122,3 +1122,24 @@
 .compare-swatch-copyable:active {
   transform: scale(0.995);
 }
+
+.compare-control-row {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  gap: 12px;
+}
+
+.compare-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: #0f172a;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .compare-control-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
